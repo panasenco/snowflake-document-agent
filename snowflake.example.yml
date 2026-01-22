@@ -1,0 +1,8 @@
+definition_version: 2
+env:
+  admin_role: "accountadmin"
+  database: "document_agent"
+  schema: "documents"
+  warehouse: "document_agent_wh"
+  warehouse_size: "xsmall"
+  role: "document_agent_role"

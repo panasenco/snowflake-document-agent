@@ -1,0 +1,5 @@
+# Ignore the real snowflake.yml config
+/snowflake.yml
+
+# Misc
+**/*.swp
