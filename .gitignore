@@ -4,5 +4,8 @@
 # Python
 **/__pycache__
 
+# Testing
+/tmp
+
 # Misc
 **/*.swp

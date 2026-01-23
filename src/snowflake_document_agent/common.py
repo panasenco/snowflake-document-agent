@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 from typing import Any
 import os
 
 import snowflake.connector
+from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
 import yaml
 
@@ -29,17 +31,19 @@ def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
     return config.get("env", {})
 
 
-def get_snowflake_connection(env_config: dict[str, Any]) -> snowflake.connector.SnowflakeConnection:
-    return snowflake.connector.connect(
-        role=env_config.get("role"),
-        warehouse=env_config.get("warehouse"),
-        database=env_config.get("database"),
-        schema=env_config.get("schema"),
-    )
+def create_cursor(conn: SnowflakeConnection, config: dict[str, Any], /) -> SnowflakeCursor:
+    cursor = conn.cursor()
+    cursor.execute(f"use role {config['role']}")
+    cursor.execute(f"use warehouse {config['warehouse']}")
+    cursor.execute(f"use database {config['database']}")
+    cursor.execute(f"use schema {config['schema']}")
+    return cursor
 
 
-def get_snowflake_documents(conn: snowflake.connector.SnowflakeConnection, *, prefix: str) -> dict[str, DocumentInfo]:
-    with conn.cursor() as cursor:
+def get_snowflake_documents(
+    conn: snowflake.connector.SnowflakeConnection, *, prefix: str, config: dict[str, Any]
+) -> dict[str, DocumentInfo]:
+    with create_cursor(conn, config) as cursor:
         cursor.execute(
             f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, '{prefix}://')"
         )
@@ -51,6 +55,7 @@ def get_snowflake_documents(conn: snowflake.connector.SnowflakeConnection, *, pr
 
 def stage_document(
     cursor: SnowflakeCursor,
+    *,
     source_uri: str,
     local_path: Path,
     modified_at_utc: datetime,
@@ -87,7 +92,7 @@ def stage_document(
     cursor.execute(query, (metadata,))
 
 
-def parse_documents(cursor: SnowflakeCursor, prefix: str, insert: bool) -> None:
+def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> None:
     """
     Parses all documents from the stage and inserts into parsed_documents.
     """
@@ -120,7 +125,7 @@ def parse_documents(cursor: SnowflakeCursor, prefix: str, insert: bool) -> None:
     cursor.execute(query)
 
 
-def generate_metadata(cursor: SnowflakeCursor, prefix: str, config: dict[str, Any], insert: bool) -> None:
+def generate_metadata(cursor: SnowflakeCursor, *, prefix: str, config: dict[str, Any], insert: bool) -> None:
     """
     Generates metadata for all documents in the stage
     """
@@ -159,7 +164,7 @@ def generate_metadata(cursor: SnowflakeCursor, prefix: str, config: dict[str, An
     cursor.execute(query)
 
 
-def chunk_documents(cursor: SnowflakeCursor, prefix: str, config: dict[str, Any], insert: bool) -> None:
+def chunk_documents(cursor: SnowflakeCursor, *, prefix: str, config: dict[str, Any], insert: bool) -> None:
     """
     Splits documents into overlapping chunks for easier search
     """
@@ -202,13 +207,14 @@ def clear_stage(cursor: SnowflakeCursor) -> None:
 
 
 def upload_documents(
-    conn: snowflake.connector.SnowflakeConnection,
+    conn: SnowflakeConnection,
+    *,
     sources: dict[str, DocumentInfo],
     prefix: str,
     config: dict[str, Any],
     insert: bool,
 ) -> None:
-    with conn.cursor() as cursor:
+    with create_cursor(conn, config) as cursor:
         clear_stage(cursor)
         for source_uri, source_info in sources.items():
             stage_document(
@@ -225,10 +231,10 @@ def upload_documents(
         clear_stage(cursor)
 
 
-def delete_documents(conn: snowflake.connector.SnowflakeConnection, deleted_uris: set[str]) -> None:
+def delete_documents(conn: SnowflakeConnection, *, deleted_uris: set[str], config: dict[str, Any]) -> None:
     if not deleted_uris:
         return
-    with conn.cursor() as cursor:
+    with create_cursor(conn, config):
         # Create a string of placeholders: :1, :2, ..., :N
         placeholders = ", ".join([f":{i + 1}" for i in range(len(deleted_uris))])
         for table in ALL_TABLES:
@@ -240,19 +246,26 @@ def delete_documents(conn: snowflake.connector.SnowflakeConnection, deleted_uris
 
 def process_documents(
     sources: dict[str, DocumentInfo],
+    *, 
     prefix: str,
-    conn: snowflake.connector.SnowflakeConnection | None = None,
+    snowflake_connection_name: str = "default",
+    conn: SnowflakeConnection | None = None,
 ) -> None:
     config = load_config()
     if conn is None:
-        conn = get_snowflake_connection(config)
-    targets = get_snowflake_documents(conn, prefix=prefix)
+        conn = snowflake.connector.connect(connection_name=snowflake_connection_name)
+    targets = get_snowflake_documents(conn, prefix=prefix, config=config)
     source_uris = set(sources)
     target_uris = set(targets)
     # Delete the removed documents
-    delete_documents(conn, target_uris - source_uris)
+    deleted_uris = target_uris - source_uris
+    for uri in deleted_uris:
+        logging.info(f"Deleting document {uri} from Snowflake...")
+    delete_documents(conn, deleted_uris=deleted_uris, config=config)
     # Insert the added documents
     added_uris = source_uris - target_uris
+    for uri in added_uris:
+        logging.info(f"Adding document {uri} to Snowflake...")
     upload_documents(
         conn,
         sources={uri: source for uri, source in sources.items() if uri in added_uris},
@@ -263,6 +276,8 @@ def process_documents(
     # Update the modified documents
     common_uris = source_uris & target_uris
     modified_uris = {uri for uri in common_uris if sources[uri].modified_at_utc > targets[uri].modified_at_utc}
+    for uri in modified_uris:
+        logging.info(f"Updating modified document {uri} in Snowflake...")
     upload_documents(
         conn,
         sources={uri: source for uri, source in sources.items() if uri in modified_uris},

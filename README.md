@@ -6,14 +6,14 @@ Adding a more production-grade pipeline for ingesting new documents incrementall
 
 ## Setup
 
-### Development environment
+### Your machine
 ```sh
 git clone https://github.com/panasenco/snowflake-document-agent.git
 cd snowflake-document-agent
 ```
 
 On most systems: Install [snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation) and [uv](https://docs.astral.sh/uv/getting-started/installation/), then `uv sync`.
-On NixOS: `nix develop`.
+On NixOS: just `nix develop`.
 
 ### Snowflake
 1.  [Install snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation).
@@ -25,3 +25,11 @@ On NixOS: `nix develop`.
     ```sh
     snow sql -f scripts/snowflake-cli/script_name.sql
     ```
+
+## Running the pipeline
+
+### Ingest local files
+Run this command to upload some documents to Snowflake and to see what changes are being synchronized:
+```sh
+ingest-local path/to/your/documents --verbose
+```
