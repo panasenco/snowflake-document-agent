@@ -38,23 +38,30 @@ def scan_local_files(root_dir, prefix):
         print(f"Error: Directory '{root_dir}' does not exist.")
         sys.exit(1)
 
-    for path in root_path.rglob("*"):
-        if path.is_file():
+    # Use Path.walk (Python 3.12+) to efficiently prune directories
+    for root, dirs, files in root_path.walk():
+        # Modify dirs in-place to skip hidden directories (like .git, .venv)
+        # This prevents descending into them entirely
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        
+        for file_name in files:
             # Skip hidden files
-            if path.name.startswith("."):
+            if file_name.startswith("."):
                 continue
-                
-            relative_path = path.relative_to(root_path)
+            
+            file_path = root / file_name
+            relative_path = file_path.relative_to(root_path)
+            
             # Ensure forward slashes for URI
             uri_path = str(relative_path).replace(os.sep, "/")
-            source_uri = f"{prefix}{uri_path}"
+            source_uri = f"{prefix}://{uri_path}"
             
             # Get modification time in UTC
-            mtime = path.stat().st_mtime
+            mtime = file_path.stat().st_mtime
             dt_utc = datetime.fromtimestamp(mtime, tz=timezone.utc)
             
             local_files[source_uri] = {
-                "path": path,
+                "path": file_path,
                 "mtime": dt_utc,
                 "relative_path": str(relative_path) # native separator for file operations
             }
@@ -65,13 +72,10 @@ def scan_remote_files(conn, table_name, prefix):
     remote_files = {}
     cursor = conn.cursor()
     try:
-        # Check if table exists first to avoid confusing errors? 
-        # Assuming table exists based on instructions.
-        
         # We filter by prefix to only manage files belonging to this "source"
         # Use parameter binding for safety
         query = f"SELECT source_uri, modified_at_utc FROM {table_name} WHERE source_uri LIKE %s"
-        cursor.execute(query, (f"{prefix}%",))
+        cursor.execute(query, (f"{prefix}://%",))
         for row in cursor:
             source_uri = row[0]
             modified_at = row[1]
@@ -104,8 +108,7 @@ def upload_file(conn, local_file_info, stage_name):
         abs_path = str(file_path.absolute()).replace("\\", "\\\\") # Windows safety
         
         print(f"Uploading {file_path} to {target_stage_path}...")
-        # PUT command doesn't support standard binding for the file path/stage usually in the same way,
-        # but the path is local.
+        # PUT command doesn't support standard binding for the file path/stage usually in the same way
         put_cmd = f"PUT 'file://{abs_path}' {target_stage_path} AUTO_COMPRESS=FALSE OVERWRITE=TRUE"
         cursor.execute(put_cmd)
     except Exception as e:
@@ -117,9 +120,6 @@ def upload_file(conn, local_file_info, stage_name):
 def update_metadata(conn, table_name, source_uri, mtime):
     cursor = conn.cursor()
     try:
-        # Merge statement using bindings
-        # mtime is a datetime object
-        
         query = f"""
         MERGE INTO {table_name} AS target
         USING (SELECT %s AS source_uri, %s AS modified_at_utc) AS source
@@ -143,24 +143,18 @@ def delete_file(conn, table_name, stage_name, source_uri, prefix):
         
         # Optional: Remove from stage.
         # Derived path from source_uri
-        # source_uri = prefix + path/to/file
-        # stage path = path/to/file
-        if source_uri.startswith(prefix):
-            rel_path = source_uri[len(prefix):]
+        # source_uri = prefix + :// + path/to/file
+        full_prefix = f"{prefix}://"
+        if source_uri.startswith(full_prefix):
+            rel_path = source_uri[len(full_prefix):]
             # Ensure no leading slash for stage removal
             if rel_path.startswith("/"):
                 rel_path = rel_path[1:]
                 
-            # REMOVE command usually doesn't take bindings for the path literal efficiently if part of syntax
-            # But we can try or just strictly sanitizing.
-            # Ideally: REMOVE @stage/path
-            
-            # Simple sanitization to prevent injection if we insert into string
-            # In Snowflake REMOVE is a command.
+            # Simple sanitization to prevent injection
             safe_rel_path = rel_path.replace("'", "''")
             rm_cmd = f"REMOVE '@{stage_name}/{safe_rel_path}'"
             
-            # We execute this best-effort
             try:
                 cursor.execute(rm_cmd)
             except Exception as e:
@@ -172,9 +166,10 @@ def delete_file(conn, table_name, stage_name, source_uri, prefix):
 def main():
     parser = argparse.ArgumentParser(description="Ingest local documents into Snowflake.")
     parser.add_argument("root_dir", help="Root directory containing documents")
-    parser.add_argument("--prefix", default="local://", help="URI prefix for the documents (default: local://)")
+    parser.add_argument("--prefix", default="local", help="URI scheme prefix for the documents (default: local)")
     
     args = parser.parse_args()
+    prefix = args.prefix
     
     env_config = load_config()
     conn = get_snowflake_connection(env_config)
@@ -183,10 +178,10 @@ def main():
     table_name = "document_metadata"
     
     print(f"Scanning local files in {args.root_dir}...")
-    local_files = scan_local_files(args.root_dir, args.prefix)
+    local_files = scan_local_files(args.root_dir, prefix)
     
     print(f"Fetching existing metadata from Snowflake ({table_name})...")
-    remote_files = scan_remote_files(conn, table_name, args.prefix)
+    remote_files = scan_remote_files(conn, table_name, prefix)
     
     to_add_or_update = []
     to_delete = []
@@ -195,9 +190,6 @@ def main():
         if uri not in remote_files:
             to_add_or_update.append(uri)
         else:
-            # Compare timestamps
-            # Use a small epsilon for float comparison safety if needed, 
-            # but usually > is fine if remote is strictly older.
             if info["mtime"] > remote_files[uri]:
                  to_add_or_update.append(uri)
                  
@@ -214,7 +206,7 @@ def main():
         print(f"Updated {uri}")
         
     for uri in to_delete:
-        delete_file(conn, table_name, stage_name, uri, args.prefix)
+        delete_file(conn, table_name, stage_name, uri, prefix)
         print(f"Deleted {uri}")
         
     conn.close()
