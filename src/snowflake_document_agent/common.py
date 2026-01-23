@@ -62,33 +62,27 @@ def stage_document(
             auto_compress=false overwrite=true
         """)
     # Update the modification timestamp and the metadata string
-    cte = f"""
-    with updated_metadata as (
+    cte_inner = f"""
         select
             '{source_uri}' as source_uri,
             '{modified_at_utc.isoformat()}'::timestamp_ntz as modified_at_utc,
             :1 as metadata
-    )
     """
     if insert:
-        query = (
-            cte
-            + """
+        query = f"""
             insert into document_metadata (source_uri, modified_at_utc, metadata)
+            with updated_metadata as ({cte_inner})
             select * from updated_metadata
             """
-        )
     else:
-        query = (
-            cte
-            + """
+        query = f"""
+            with updated_metadata as ({cte_inner})
             update document_metadata set
                 modified_at_utc = updated_metadata.modified_at_utc,
                 metadata = updated_metadata.metadata
             from updated_metadata
             where document_metadata.source_uri = updated_metadata.source_uri
             """
-        )
     cursor.execute(query, (metadata,))
 
 

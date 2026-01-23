@@ -16,9 +16,10 @@ On most systems: Install [snowflake-cli](https://docs.snowflake.com/en/developer
 On NixOS: `nix develop`.
 
 ### Snowflake
-1.  [Install and configure snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation).
-2.  Copy the file `snowflake.example.yml` to `snowflake.yml` and change the values.
-3.  Inspect each setup script in `./scripts/snowflake-cli/setup_*`.
+1.  [Install snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation).
+2.  Configure the file [connections.toml](https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-connect#connecting-using-the-connections-toml-file) which will work for both snowflake-cli and snowflake-connector-python.
+3.  Copy the file `snowflake.example.yml` to `snowflake.yml` and change the values.
+4.  Inspect each setup script in `./scripts/snowflake-cli/setup_*`.
     Only run each script if it makes sense to you and aligns with your organization's best practices!
     Run each script with a command like:
     ```sh
