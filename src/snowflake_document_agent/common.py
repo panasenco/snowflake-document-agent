@@ -43,9 +43,9 @@ def get_snowflake_documents(
     conn: snowflake.connector.SnowflakeConnection, *, prefix: str, config: dict[str, Any]
 ) -> dict[str, DocumentInfo]:
     with create_cursor(conn, config) as cursor:
-        prefix_escaped = prefix.replace("'", "''")
         cursor.execute(
-            f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, '{prefix_escaped}://')"
+            "select source_uri, modified_at_utc from document_metadata where startswith(source_uri, :1)",
+            (f"{prefix}://",),
         )
         return {
             source_uri: DocumentInfo(modified_at_utc=modified_at_utc.replace(tzinfo=timezone.utc))
@@ -55,7 +55,7 @@ def get_snowflake_documents(
 
 def create_temporary_updated_uris(conn: SnowflakeConnection, /, *, config: dict[str, Any]) -> None:
     with create_cursor(conn, config) as cursor:
-        cursor.execute("create or replace temporary table updated_uris(source_uri string, source_path string)")
+        cursor.execute("create or replace temporary table updated_uris(source_uri string, stage_path string)")
 
 
 def stage_document(
@@ -69,20 +69,19 @@ def stage_document(
 ) -> None:
     # Upload the document to Snowflake
     local_path_str = str(local_path.absolute()).replace("\\", "\\\\").replace("'", "\\'")
-    source_path_str = source_uri.split("://", 1)[-1].replace("'", "''")
-    cursor.execute(f"""
-        put 'file://{local_path_str}' '@documents/{source_path_str}'
-            auto_compress=false overwrite=true
-        """)
+    stage_path = source_uri.split("://", 1)[-1]
+    stage_parent = stage_path.rsplit("/", 1)[0].replace("'", "\\'") if "/" in stage_path else ""
+    cursor.execute(
+        f"put 'file://{local_path_str}' '@documents/{stage_parent}' auto_compress=false overwrite=true",
+    )
     # Add to updated_uris
-    cursor.execute("insert into updated_uris(source_uri, source_path) values (:1, :2)", (source_uri, source_path_str))
+    cursor.execute("insert into updated_uris(source_uri, stage_path) values (:1, :2)", (source_uri, stage_path))
     # Update the modification timestamp and the metadata string
-    source_uri_escaped = source_uri.replace("'", "''")
-    select_stmt = f"""
+    select_stmt = """
         select
-            '{source_uri_escaped}' as source_uri,
-            '{modified_at_utc.isoformat()}'::timestamp_ntz as modified_at_utc,
-            :1 as metadata
+            :1 as source_uri,
+            :2::timestamp_ntz as modified_at_utc,
+            :3 as metadata
         """
     if insert:
         query = f"""
@@ -97,7 +96,7 @@ def stage_document(
             from ({select_stmt}) as updated_metadata
             where document_metadata.source_uri = updated_metadata.source_uri
             """
-    cursor.execute(query, (metadata,))
+    cursor.execute(query, (source_uri, modified_at_utc.isoformat(), metadata))
 
 
 def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> None:
@@ -107,13 +106,13 @@ def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> No
     # Refresh the stage for directory() to be up-to-date
     cursor.execute("alter stage documents refresh")
 
-    select_stmt = f"""
+    select_stmt = """
         select
             source_uri,
             snowflake.cortex.parse_document(
                 '@documents',
-                source_path,
-                {{'mode': 'OCR'}}
+                stage_path,
+                {'mode': 'OCR'}
             )::string as parsed_content
         from updated_uris
         """

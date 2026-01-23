@@ -1,5 +1,4 @@
 import pytest
-from pathlib import Path
 from datetime import datetime, timezone
 from snowflake_document_agent.common import stage_document, get_snowflake_documents
 
@@ -127,7 +126,7 @@ def test_get_snowflake_documents_integration(snowflake_conn, test_schema, setup_
 
     cursor = snowflake_conn.cursor()
     # Debug: Run the exact query used in get_snowflake_documents
-    query = f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, 'local://')"
+    query = "select source_uri, modified_at_utc from document_metadata where startswith(source_uri, 'local://')"
     cursor.execute(query)
     debug_results = cursor.fetchall()
     print(f"\nDEBUG: Manual query results for '{query}': {debug_results}")
@@ -235,6 +234,10 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, co
             cursor.execute(f"select count(*) from {table}")
             count = cursor.fetchone()[0]
             assert count == 1, f"Row missing in {table} after ingestion. Expected 1, got {count}"
+
+        # 3.1. Verify parsing
+        cursor.execute("select parsed_content from parsed_documents")
+        assert "error" not in cursor.fetchone()[0].lower(), "Parsing error in parsed_documents"
 
         # 4. Execute - Modification
         new_mod_time = datetime.now(timezone.utc)

@@ -1,5 +1,4 @@
 import pytest
-from pathlib import Path
 from datetime import datetime, timezone
 from snowflake_document_agent.common import (
     stage_document,
