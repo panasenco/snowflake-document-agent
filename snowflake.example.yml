@@ -1,3 +1,4 @@
+# Copy to snowflake.yml
 definition_version: 2
 env:
   admin_role: "accountadmin"
