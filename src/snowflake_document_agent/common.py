@@ -33,10 +33,9 @@ def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
 
 def create_cursor(conn: SnowflakeConnection, config: dict[str, Any], /) -> SnowflakeCursor:
     cursor = conn.cursor()
-    cursor.execute(f"use role {config['role']}")
-    cursor.execute(f"use warehouse {config['warehouse']}")
-    cursor.execute(f"use database {config['database']}")
-    cursor.execute(f"use schema {config['schema']}")
+    for attribute in ["role", "warehouse", "database", "schema"]:
+        if attribute in config:
+            cursor.execute(f"use {attribute} {config[attribute]}")
     return cursor
 
 
@@ -44,8 +43,9 @@ def get_snowflake_documents(
     conn: snowflake.connector.SnowflakeConnection, *, prefix: str, config: dict[str, Any]
 ) -> dict[str, DocumentInfo]:
     with create_cursor(conn, config) as cursor:
+        prefix_escaped = prefix.replace("'", "''")
         cursor.execute(
-            f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, '{prefix}://')"
+            f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, '{prefix_escaped}://')"
         )
         return {
             source_uri: DocumentInfo(modified_at_utc=modified_at_utc.replace(tzinfo=timezone.utc))
@@ -63,16 +63,17 @@ def stage_document(
     metadata: str = "",
 ) -> None:
     # Upload the document to Snowflake
-    local_path_str = str(local_path.absolute()).replace("\\", "\\\\")
-    source_path_str = source_uri.split("://", 1)[-1]
+    local_path_str = str(local_path.absolute()).replace("\\", "\\\\").replace("'", "\\'")
+    source_path_str = source_uri.split("://", 1)[-1].replace("'", "''")
     cursor.execute(f"""
-        put 'file://{local_path_str}' @documents/{source_path_str}
+        put 'file://{local_path_str}' '@documents/{source_path_str}'
             auto_compress=false overwrite=true
         """)
     # Update the modification timestamp and the metadata string
+    source_uri_escaped = source_uri.replace("'", "''")
     select_stmt = f"""
         select
-            '{source_uri}' as source_uri,
+            '{source_uri_escaped}' as source_uri,
             '{modified_at_utc.isoformat()}'::timestamp_ntz as modified_at_utc,
             :1 as metadata
         """
@@ -234,7 +235,7 @@ def upload_documents(
 def delete_documents(conn: SnowflakeConnection, *, deleted_uris: set[str], config: dict[str, Any]) -> None:
     if not deleted_uris:
         return
-    with create_cursor(conn, config):
+    with create_cursor(conn, config) as cursor:
         # Create a string of placeholders: :1, :2, ..., :N
         placeholders = ", ".join([f":{i + 1}" for i in range(len(deleted_uris))])
         for table in ALL_TABLES:

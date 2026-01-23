@@ -135,7 +135,7 @@ def test_get_snowflake_documents_integration(snowflake_conn, test_schema, setup_
     # Action
     # Search with the prefix "local", as get_snowflake_documents appends "://"
     prefix = "local"
-    docs = get_snowflake_documents(snowflake_conn, prefix=prefix)
+    docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config={})
     print(f"DEBUG: docs returned: {docs}")
 
     # Assert
@@ -178,7 +178,7 @@ def test_delete_documents_integration(snowflake_conn, test_schema):
                 cursor.execute(f"insert into {table} (source_uri, {col}) values ('{source_uri}', 'content')")
 
         # 2. Execute
-        delete_documents(snowflake_conn, {source_uri})
+        delete_documents(snowflake_conn, deleted_uris={source_uri}, config={})
 
         # 3. Verify
         for table in ALL_TABLES:
@@ -217,7 +217,7 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path):
         process_documents(sources, prefix=prefix, conn=snowflake_conn)
 
         # 3. Verify Ingestion
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix)
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config={})
         assert source_uri in docs
 
         # 4. Execute - Modification
@@ -228,14 +228,14 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path):
         process_documents(sources, prefix=prefix, conn=snowflake_conn)
 
         # 5. Verify Modification
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix)
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config={})
         assert abs((docs[source_uri].modified_at_utc - new_mod_time).total_seconds()) < 2.0
 
         # 6. Execute - Deletion
         process_documents({}, prefix=prefix, conn=snowflake_conn)
 
         # 7. Verify Deletion
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix)
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config={})
         assert source_uri not in docs
 
     finally:
