@@ -10,7 +10,7 @@ def get_local_documents(root_path: Path, prefix: str) -> Dict[str, DocumentInfo]
     if not root_path.exists():
         raise RuntimeError(f"Error: Root directory '{root_path}' does not exist.")
     local_documents = {}
-    
+
     # Use Path.walk (Python 3.12+) to efficiently prune directories
     for root, dirs, files in root_path.walk():
         # Exclude directories starting with a period, like .git, .venv, etc
@@ -37,6 +37,6 @@ def main() -> None:
     local_documents = get_local_documents(root_path=root_path, prefix=args.prefix)
     process_documents(local_documents, prefix=prefix)
 
+
 if __name__ == "__main__":
     main()
-

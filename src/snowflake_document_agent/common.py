@@ -7,9 +7,10 @@ import snowflake.connector
 from snowflake.connector.cursor import SnowflakeCursor
 import yaml
 
-snowflake.connector.paramstyle='numeric'
+snowflake.connector.paramstyle = "numeric"
 
 ALL_TABLES = ["document_metadata", "enhanced_metadata", "parsed_documents", "document_chunks"]
+
 
 @dataclass
 class DocumentInfo:
@@ -17,13 +18,15 @@ class DocumentInfo:
     local_path: Path | None = None
     metadata: str = ""
 
+
 def load_config(config_path: str = "snowflake.yml") -> Dict[str, Any]:
     if not os.path.exists(config_path):
         raise RuntimeError(f"Error: Config file '{config_path}' not found.")
-    
+
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
     return config.get("env", {})
+
 
 def get_snowflake_connection(env_config: Dict[str, Any]) -> snowflake.connector.SnowflakeConnection:
     return snowflake.connector.connect(
@@ -33,29 +36,30 @@ def get_snowflake_connection(env_config: Dict[str, Any]) -> snowflake.connector.
         schema=env_config.get("schema"),
     )
 
+
 def get_snowflake_documents(conn: snowflake.connector.SnowflakeConnection, *, prefix: str) -> dict[str, DocumentInfo]:
     with conn.cursor() as cursor:
         cursor.execute(
-                f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, '{prefix}://')"
+            f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, '{prefix}://')"
         )
     return {source_uri: DocumentInfo(modified_at_utc=modified_at_utc) for source_uri, modified_at_utc in cursor}
 
+
 def stage_document(
-        cursor: SnowflakeCursor,
-        source_uri: str,
-        local_path: Path,
-        modified_at_utc: datetime,
-        metadata: str = "",
-        insert: bool,
-    ) -> None:
+    cursor: SnowflakeCursor,
+    source_uri: str,
+    local_path: Path,
+    modified_at_utc: datetime,
+    insert: bool,
+    metadata: str = "",
+) -> None:
     # Upload the document to Snowflake
     local_path_str = str(local_path.absolute()).replace("\\", "\\\\")
     source_path_str = source_uri.split("://", 1)[-1]
     cursor.execute(f"""
         put 'file://{local_path_str}' @documents/{source_path_str}
             auto_compress=false overwrite=true
-        """
-    )
+        """)
     # Update the modification timestamp and the metadata string
     cte = f"""
     with updated_metadata as (
@@ -66,20 +70,26 @@ def stage_document(
     )
     """
     if insert:
-        query = cte + f"""
+        query = (
+            cte
+            + f"""
         insert into document_metadata (source_uri, modified_at_utc, metadata)
         select * from updated_metadata
         """
+        )
     else:
-        query = cte + f"""
+        query = (
+            cte
+            + f"""
         update document_metadata set
             modified_at_utc = updated_metadata.modified_at_utc,
             metadata = updated_metadata.metadata
         from updated_metadata
         where document_metadata.source_uri = updated_metadata.source_uri
         """
+        )
     cursor.execute(query, (metadata,))
-        
+
 
 def parse_documents(cursor: SnowflakeCursor, prefix: str, insert: bool) -> None:
     """
@@ -100,17 +110,23 @@ def parse_documents(cursor: SnowflakeCursor, prefix: str, insert: bool) -> None:
     )
     """
     if insert:
-        query = cte + f"""
+        query = (
+            cte
+            + f"""
         insert into parsed_documents (source_uri, parsed_content)
         select * from updated_documents
         """
+        )
     else:
-        query = cte + f"""
+        query = (
+            cte
+            + f"""
         update parsed_documents set
             parsed_content = updated_documents.parsed_content
         from updated_documents
         where parsed_documents.source_uri = updated_documents.source_uri
         """
+        )
     cursor.execute(query)
 
 
@@ -142,17 +158,23 @@ def generate_metadata(cursor: SnowflakeCursor, prefix: str, config: dict[str, An
     )
     """
     if insert:
-        query = ctes + f"""
+        query = (
+            ctes
+            + f"""
         insert into enhanced_metadata (source_uri, enhanced_metadata)
         select * from updated_metadata
         """
+        )
     else:
-        query = ctes + f"""
+        query = (
+            ctes
+            + f"""
         update enhanced_metadata set
             enhanced_metadata = updated_metadata.enhanced_metadata
         from updated_metadata
         where enhanced_metadata.source_uri = updated_metadata.source_uri
         """
+        )
     cursor.execute(query)
 
 
@@ -183,29 +205,37 @@ def chunk_documents(cursor: SnowflakeCursor, prefix: str, config: dict[str, Any]
     )
     """
     if insert:
-        query = ctes + f"""
+        query = (
+            ctes
+            + f"""
         insert into document_chunks (source_uri, contextualized_chunks)
         select * from updated_chunks
         """
+        )
     else:
-        query = ctes + f"""
+        query = (
+            ctes
+            + f"""
         update document_chunks set
             contextualized_chunks = updated_chunks.contextualized_chunks
         from updated_chunks
         where document_chunks.source_uri = updated_chunks.source_uri
         """
+        )
     cursor.execute(query)
 
-def clear_stage(cursor: SnowflakeCursor) -> None
+
+def clear_stage(cursor: SnowflakeCursor) -> None:
     cursor.execute(f"remove stage @documents")
 
+
 def upload_documents(
-        conn: snowflake.connector.SnowflakeConnection,
-        sources: dict[str, DocumentInfo],
-        prefix: str,
-        config: dict[str, Any],
-        insert: bool
-    ) -> None:
+    conn: snowflake.connector.SnowflakeConnection,
+    sources: dict[str, DocumentInfo],
+    prefix: str,
+    config: dict[str, Any],
+    insert: bool,
+) -> None:
     with conn.cursor() as cursor:
         clear_stage(cursor)
         for source_uri, source_info in sources.items():
@@ -220,12 +250,13 @@ def upload_documents(
         generate_metadata(cursor, prefix=prefix, config=config, insert=insert)
         chunk_documents(cursor, prefix=prefix, config=config, insert=insert)
         clear_stage(cursor)
-                
+
 
 def delete_documents(conn: snowflake.connector.SnowflakeConnection, deleted_uris: set[str]) -> None:
     with conn.cursor() as cursor:
         for table in ALL_TABLES:
             cursor.execute(f"delete from {table} where source_uri in :1", (deleted_uris,))
+
 
 def process_documents(sources: dict[str, DocumentInfo], prefix: str) -> None:
     config = load_config()
@@ -254,4 +285,3 @@ def process_documents(sources: dict[str, DocumentInfo], prefix: str) -> None:
         config=config,
         insert=False,
     )
-
