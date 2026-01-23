@@ -3,6 +3,7 @@ from time import time
 
 import pytest
 import snowflake.connector
+import yaml
 
 
 def pytest_addoption(parser):
@@ -21,6 +22,21 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_integration)
+
+
+@pytest.fixture(scope="session")
+def config():
+    """
+    Returns a default config
+    """
+    with open(Path(__file__).parent.parent / "snowflake.example.yml", "r") as config_file:
+        config = yaml.safe_load(config_file)["env"]
+
+    for attribute in ["role", "warehouse", "database", "schema"]:
+        if attribute in config:
+            del config[attribute]
+
+    yield config
 
 
 @pytest.fixture(scope="session")

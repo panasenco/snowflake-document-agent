@@ -191,7 +191,7 @@ def test_delete_documents_integration(snowflake_conn, test_schema):
 
 
 @pytest.mark.integration
-def test_process_documents_integration(snowflake_conn, test_schema, tmp_path):
+def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, config):
     """
     Higher-level integration test for process_documents.
     """
@@ -214,10 +214,10 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path):
 
     try:
         # 2. Execute - Initial Ingestion
-        process_documents(sources, prefix=prefix, conn=snowflake_conn)
+        process_documents(sources, prefix=prefix, conn=snowflake_conn, config=config)
 
         # 3. Verify Ingestion
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config={})
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
         assert source_uri in docs
 
         # 4. Execute - Modification
@@ -228,14 +228,14 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path):
         process_documents(sources, prefix=prefix, conn=snowflake_conn)
 
         # 5. Verify Modification
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config={})
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
         assert abs((docs[source_uri].modified_at_utc - new_mod_time).total_seconds()) < 2.0
 
         # 6. Execute - Deletion
-        process_documents({}, prefix=prefix, conn=snowflake_conn)
+        process_documents({}, prefix=prefix, conn=snowflake_conn, config=config)
 
         # 7. Verify Deletion
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config={})
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
         assert source_uri not in docs
 
     finally:

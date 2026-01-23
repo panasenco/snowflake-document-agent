@@ -229,7 +229,6 @@ def upload_documents(
         parse_documents(cursor, prefix=prefix, insert=insert)
         generate_metadata(cursor, prefix=prefix, config=config, insert=insert)
         chunk_documents(cursor, prefix=prefix, config=config, insert=insert)
-        clear_stage(cursor)
 
 
 def delete_documents(conn: SnowflakeConnection, *, deleted_uris: set[str], config: dict[str, Any]) -> None:
@@ -247,12 +246,14 @@ def delete_documents(conn: SnowflakeConnection, *, deleted_uris: set[str], confi
 
 def process_documents(
     sources: dict[str, DocumentInfo],
-    *, 
+    *,
     prefix: str,
     snowflake_connection_name: str = "default",
     conn: SnowflakeConnection | None = None,
+    config: dict[str, Any] | None = None,
 ) -> None:
-    config = load_config()
+    if config is None:
+        config = load_config()
     if conn is None:
         conn = snowflake.connector.connect(connection_name=snowflake_connection_name)
     targets = get_snowflake_documents(conn, prefix=prefix, config=config)
