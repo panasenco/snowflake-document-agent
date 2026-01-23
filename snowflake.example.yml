@@ -9,6 +9,18 @@ env:
   role: "document_agent_role"
   embedding_model: "snowflake-arctic-embed-l-v2.0"
   metadata_model: "claude-4-sonnet"
+  metadata_first_chars: 4000
+  metadata_prompt: |
+    I am going to provide a document which will be indexed by a retrieval system containing many similar documents.
+    I want you to provide key information associated with this document that can help differentiate this document in the index.
+    Follow these instructions:
+    1.  Do not dwell on low level details.
+        Only provide key high level information that a human might be expected to provide when searching for this doc.
+    2.  Do not use any formatting, just provide keys and values using a colon to separate key and value.
+        Have each key and value be on a new line.
+    3.  Only extract at most the most important keys and values that could be relevant for this document and used in retrieval.
+  chunk_size: 1800
+  chunk_overlap: 300
   agent_name: "document_agent"
   agent_display_name: "Document Agent"
   agent_description: "Agent that can search document contents"
@@ -24,7 +36,7 @@ env:
   agent_model: "claude-sonnet-4-5"
   agent_budget_seconds: 30
   agent_budget_tokens: 16000
-  # Note that you must use `>-` because any newlines will break the template.
+  # Note that you must use `>-` because any newlines will break the agent creation template.
   # Avoid double quotes (") as those will also break the template.
   agent_instruction_response: >-
     Present your answer to the user's question in bullet points.
