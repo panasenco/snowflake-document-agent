@@ -8,6 +8,7 @@ env:
   warehouse_size: "xsmall"
   role: "document_agent_role"
   embedding_model: "snowflake-arctic-embed-l-v2.0"
+  metadata_model: "claude-4-sonnet"
   agent_name: "document_agent"
   agent_display_name: "Document Agent"
   agent_description: "Agent that can search document contents"
