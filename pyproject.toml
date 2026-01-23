@@ -5,3 +5,10 @@ description = "Python ELT processes to incrementally load document files into Sn
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
+
+[project.scripts]
+ingest-local = "snowflake_document_agent.ingest_local:main"
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"

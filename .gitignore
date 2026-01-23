@@ -1,5 +1,8 @@
 # Ignore the real snowflake.yml config
 /snowflake.yml
 
+# Python
+**/__pycache__
+
 # Misc
 **/*.swp
