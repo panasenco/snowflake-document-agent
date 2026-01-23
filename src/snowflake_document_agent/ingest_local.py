@@ -1,9 +1,8 @@
 import argparse
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .common import DocumentInfo, load_config, process_documents
+from .common import DocumentInfo, process_documents
 
 
 def get_local_documents(root_path: Path, prefix: str) -> Dict[str, DocumentInfo]:
@@ -33,7 +32,6 @@ def main() -> None:
     parser.add_argument("--prefix", default="local", help="URI scheme prefix for the documents (default: local)")
     args = parser.parse_args()
     root_path = Path(args.root_dir)
-    env_config = load_config()
     local_documents = get_local_documents(root_path=root_path, prefix=args.prefix)
     process_documents(local_documents, prefix=prefix)
 
