@@ -53,6 +53,11 @@ def get_snowflake_documents(
         }
 
 
+def create_temporary_updated_uris(conn: SnowflakeConnection, /, *, config: dict[str, Any]) -> None:
+    with create_cursor(conn, config) as cursor:
+        cursor.execute("create or replace temporary table updated_uris(source_uri string, source_path string)")
+
+
 def stage_document(
     cursor: SnowflakeCursor,
     *,
@@ -69,6 +74,8 @@ def stage_document(
         put 'file://{local_path_str}' '@documents/{source_path_str}'
             auto_compress=false overwrite=true
         """)
+    # Add to updated_uris
+    cursor.execute("insert into updated_uris(source_uri, source_path) values (:1, :2)", (source_uri, source_path_str))
     # Update the modification timestamp and the metadata string
     source_uri_escaped = source_uri.replace("'", "''")
     select_stmt = f"""
@@ -102,13 +109,13 @@ def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> No
 
     select_stmt = f"""
         select
-            '{prefix}://' || relative_path as source_uri,
+            source_uri,
             snowflake.cortex.parse_document(
                 '@documents',
-                relative_path,
+                source_path,
                 {{'mode': 'OCR'}}
             )::string as parsed_content
-        from directory(@documents)
+        from updated_uris
         """
 
     if insert:
@@ -143,11 +150,11 @@ def generate_metadata(cursor: SnowflakeCursor, *, prefix: str, config: dict[str,
                 || substr(parsed_content, 0, {config["metadata_first_chars"]}) 
                 || '\\nDoc ends here\\n\\n'
             ) as enhanced_metadata
-        from directory(@documents) as d
-        join document_metadata 
-            on ('{prefix}://' || d.relative_path) = document_metadata.source_uri
-        join parsed_documents 
-            on ('{prefix}://' || d.relative_path) = parsed_documents.source_uri
+        from updated_uris
+        inner join document_metadata 
+            on updated_uris.source_uri = document_metadata.source_uri
+        inner join parsed_documents 
+            on updated_uris.source_uri = parsed_documents.source_uri
         """
 
     if insert:
@@ -175,11 +182,11 @@ def chunk_documents(cursor: SnowflakeCursor, *, prefix: str, config: dict[str, A
             enhanced_metadata.enhanced_metadata
             || '\\n\\nDocument chunk:\\n'
             || chunks.value as contextualized_chunk
-        from directory(@documents) as d
+        from updated_uris
         join parsed_documents 
-            on ('{prefix}://' || d.relative_path) = parsed_documents.source_uri
+            on updated_uris.source_uri = parsed_documents.source_uri
         join enhanced_metadata 
-            on ('{prefix}://' || d.relative_path) = enhanced_metadata.source_uri,
+            on updated_uris.source_uri = enhanced_metadata.source_uri,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             parsed_documents.parsed_content,
             'none',
@@ -264,26 +271,30 @@ def process_documents(
     for uri in deleted_uris:
         logging.info(f"Deleting document {uri} from Snowflake...")
     delete_documents(conn, deleted_uris=deleted_uris, config=config)
+    # Create a temporary table that will hold all the updated URIs
+    create_temporary_updated_uris(conn, config=config)
     # Insert the added documents
     added_uris = source_uris - target_uris
     for uri in added_uris:
         logging.info(f"Adding document {uri} to Snowflake...")
-    upload_documents(
-        conn,
-        sources={uri: source for uri, source in sources.items() if uri in added_uris},
-        prefix=prefix,
-        config=config,
-        insert=True,
-    )
+    if added_uris:
+        upload_documents(
+            conn,
+            sources={uri: source for uri, source in sources.items() if uri in added_uris},
+            prefix=prefix,
+            config=config,
+            insert=True,
+        )
     # Update the modified documents
     common_uris = source_uris & target_uris
     modified_uris = {uri for uri in common_uris if sources[uri].modified_at_utc > targets[uri].modified_at_utc}
     for uri in modified_uris:
         logging.info(f"Updating modified document {uri} in Snowflake...")
-    upload_documents(
-        conn,
-        sources={uri: source for uri, source in sources.items() if uri in modified_uris},
-        prefix=prefix,
-        config=config,
-        insert=False,
-    )
+    if modified_uris:
+        upload_documents(
+            conn,
+            sources={uri: source for uri, source in sources.items() if uri in modified_uris},
+            prefix=prefix,
+            config=config,
+            insert=False,
+        )

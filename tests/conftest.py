@@ -69,7 +69,7 @@ def test_schema(snowflake_conn):
         yield None
         return
 
-    schema_name = f"TEST_SCHEMA_{int(time())}"
+    schema_name = f"TEST_DOCUMENT_AGENT_{int(time())}"
     cursor = snowflake_conn.cursor()
 
     try:
