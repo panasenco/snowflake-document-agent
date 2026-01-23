@@ -1,6 +1,9 @@
 # snowflake-document-agent
 Snowflake agent that enables you to chat with your documents
 
+Building on the foundation of Doneyli De Jesus' [snowflake-intelligent-rag-chatbot](https://github.com/sfc-gh-ddejesus/snowflake-intelligent-rag-chatbot).
+Adding a more production-grade pipeline for ingesting new documents incrementally.
+
 ## Setup
 1.  [Install and configure snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation).
 2.  Copy the file `snowflake.example.yml` to `snowflake.yml` and change the values.

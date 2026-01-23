@@ -6,3 +6,29 @@ env:
   warehouse: "document_agent_wh"
   warehouse_size: "xsmall"
   role: "document_agent_role"
+  embedding_model: "snowflake-arctic-embed-l-v2.0"
+  agent_name: "document_agent"
+  agent_display_name: "Document Agent"
+  agent_description: "Agent that can search document contents"
+  agent_icon: "DocumentAgentIcon"
+  # I couldn't get colors to work any other way except by copying and pasting from `describe agent`...
+  # These codes will probably break in the near future but leaving them just in case they actually don't...
+  # agent_color: "var(--chartDim_1-x11ij0mo)" # Blue
+  # agent_color: "var(--chartDim_8-x1mzf9u0)" # Pink
+  # agent_color: "var(--chartDim_3-x11sbcwy)" # Green
+  # agent_color: "var(--chartDim_4-x1kcru7n)" # Red
+  # agent_color: "var(--chartDim_5-x5ky746)"  # Purple
+  agent_color: "var(--chartDim_6-x12aliq8)" # Orange
+  agent_model: "claude-sonnet-4-5"
+  agent_budget_seconds: 30
+  agent_budget_tokens: 16000
+  # Note that you must use `>-` because any newlines will break the template.
+  # Avoid double quotes (") as those will also break the template.
+  agent_instruction_response: >-
+    Present your answer to the user's question in bullet points.
+    You must append the source URI of the document you got the information from in parentheses in **plain text** after each bullet point.
+    For example: (Chase Affiliate Agreement: file://CUAD_v1/full_contract_pdf/Part_I/Affiliate_Agreements/CreditcardscomInc_20070810_Affiliate Agreement.pdf)
+  agent_instruction_orchestration: >-
+    Use document search tools to answer the user's questions.
+  agent_metadata_max_results: 6
+  agent_document_max_results: 6

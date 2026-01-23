@@ -10,3 +10,4 @@ grant usage on schema <% ctx.env.database %>.<% ctx.env.schema %> to role <% ctx
 grant usage, operate on warehouse <% ctx.env.warehouse %> to role <% ctx.env.role %>;
 grant create table on schema <% ctx.env.database %>.<% ctx.env.schema %> to role <% ctx.env.role %>;
 grant create stage on schema <% ctx.env.database %>.<% ctx.env.schema %> to role <% ctx.env.role %>;
+grant role <% ctx.env.role %> to role <% ctx.env.admin_role %>;
