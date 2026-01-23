@@ -5,7 +5,7 @@ from pathlib import Path
 from .common import DocumentInfo, process_documents
 
 
-def get_local_documents(root_path: Path, prefix: str) -> Dict[str, DocumentInfo]:
+def get_local_documents(root_path: Path, prefix: str) -> dict[str, DocumentInfo]:
     if not root_path.exists():
         raise RuntimeError(f"Error: Root directory '{root_path}' does not exist.")
     local_documents = {}
@@ -22,7 +22,7 @@ def get_local_documents(root_path: Path, prefix: str) -> Dict[str, DocumentInfo]
             source_uri = f"{prefix}://{relative_path.as_posix()}"
             modified_timestamp = local_path.stat().st_mtime
             modified_at_utc = datetime.fromtimestamp(modified_timestamp, tz=timezone.utc)
-            local_documents[source_uri] = DocumentInfo(modified_at_utc=modified_at_utc, local_path=path)
+            local_documents[source_uri] = DocumentInfo(modified_at_utc=modified_at_utc, local_path=local_path)
     return local_documents
 
 
@@ -33,7 +33,7 @@ def main() -> None:
     args = parser.parse_args()
     root_path = Path(args.root_dir)
     local_documents = get_local_documents(root_path=root_path, prefix=args.prefix)
-    process_documents(local_documents, prefix=prefix)
+    process_documents(local_documents, prefix=args.prefix)
 
 
 if __name__ == "__main__":
