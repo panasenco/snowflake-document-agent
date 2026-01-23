@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import os
@@ -43,7 +43,10 @@ def get_snowflake_documents(conn: snowflake.connector.SnowflakeConnection, *, pr
         cursor.execute(
             f"select source_uri, modified_at_utc from document_metadata where startswith(source_uri, '{prefix}://')"
         )
-    return {source_uri: DocumentInfo(modified_at_utc=modified_at_utc) for source_uri, modified_at_utc in cursor}
+        return {
+            source_uri: DocumentInfo(modified_at_utc=modified_at_utc.replace(tzinfo=timezone.utc))
+            for source_uri, modified_at_utc in cursor
+        }
 
 
 def stage_document(
@@ -62,25 +65,23 @@ def stage_document(
             auto_compress=false overwrite=true
         """)
     # Update the modification timestamp and the metadata string
-    cte_inner = f"""
+    select_stmt = f"""
         select
             '{source_uri}' as source_uri,
             '{modified_at_utc.isoformat()}'::timestamp_ntz as modified_at_utc,
             :1 as metadata
-    """
+        """
     if insert:
         query = f"""
             insert into document_metadata (source_uri, modified_at_utc, metadata)
-            with updated_metadata as ({cte_inner})
-            select * from updated_metadata
+            {select_stmt}
             """
     else:
         query = f"""
-            with updated_metadata as ({cte_inner})
             update document_metadata set
                 modified_at_utc = updated_metadata.modified_at_utc,
                 metadata = updated_metadata.metadata
-            from updated_metadata
+            from ({select_stmt}) as updated_metadata
             where document_metadata.source_uri = updated_metadata.source_uri
             """
     cursor.execute(query, (metadata,))
@@ -92,8 +93,8 @@ def parse_documents(cursor: SnowflakeCursor, prefix: str, insert: bool) -> None:
     """
     # Refresh the stage for directory() to be up-to-date
     cursor.execute("alter stage documents refresh")
-    cte = f"""
-    with updated_documents as (
+
+    select_stmt = f"""
         select
             '{prefix}://' || relative_path as source_uri,
             snowflake.cortex.parse_document(
@@ -102,26 +103,20 @@ def parse_documents(cursor: SnowflakeCursor, prefix: str, insert: bool) -> None:
                 {{'mode': 'OCR'}}
             )::string as parsed_content
         from directory(@documents)
-    )
-    """
+        """
+
     if insert:
-        query = (
-            cte
-            + """
+        query = f"""
             insert into parsed_documents (source_uri, parsed_content)
-            select * from updated_documents
-            """
-        )
+            {select_stmt}
+        """
     else:
-        query = (
-            cte
-            + """
+        query = f"""
             update parsed_documents set
                 parsed_content = updated_documents.parsed_content
-            from updated_documents
+            from ({select_stmt}) as updated_documents
             where parsed_documents.source_uri = updated_documents.source_uri
             """
-        )
     cursor.execute(query)
 
 
@@ -129,12 +124,7 @@ def generate_metadata(cursor: SnowflakeCursor, prefix: str, config: dict[str, An
     """
     Generates metadata for all documents in the stage
     """
-    ctes = f"""
-    with updated_uris as (
-        select
-            '{prefix}://' || relative_path as source_uri
-        from directory(@documents)
-    ), updated_metadata as (
+    select_stmt = f"""
         select
             parsed_documents.source_uri,
             'Ground Truth Metadata:\\n'
@@ -147,29 +137,25 @@ def generate_metadata(cursor: SnowflakeCursor, prefix: str, config: dict[str, An
                 || substr(parsed_content, 0, {config["metadata_first_chars"]}) 
                 || '\\nDoc ends here\\n\\n'
             ) as enhanced_metadata
-        from updated_uris
-        inner join document_metadata on updated_uris.source_uri = document_metadata.source_uri
-        inner join parsed_documents on updated_uris.source_uri = parsed_documents.source_uri
-    )
-    """
+        from directory(@documents) as d
+        join document_metadata 
+            on ('{prefix}://' || d.relative_path) = document_metadata.source_uri
+        join parsed_documents 
+            on ('{prefix}://' || d.relative_path) = parsed_documents.source_uri
+        """
+
     if insert:
-        query = (
-            ctes
-            + """
+        query = f"""
             insert into enhanced_metadata (source_uri, enhanced_metadata)
-            select * from updated_metadata
-            """
-        )
+            {select_stmt}
+        """
     else:
-        query = (
-            ctes
-            + """
+        query = f"""
             update enhanced_metadata set
                 enhanced_metadata = updated_metadata.enhanced_metadata
-            from updated_metadata
+            from ({select_stmt}) as updated_metadata
             where enhanced_metadata.source_uri = updated_metadata.source_uri
             """
-        )
     cursor.execute(query)
 
 
@@ -177,51 +163,42 @@ def chunk_documents(cursor: SnowflakeCursor, prefix: str, config: dict[str, Any]
     """
     Splits documents into overlapping chunks for easier search
     """
-    ctes = f"""
-    with updated_uris as (
-        select
-            '{prefix}://' || relative_path as source_uri
-        from directory(@documents)
-    ), updated_chunks as (
+    select_stmt = f"""
         select
             parsed_documents.source_uri,
             enhanced_metadata.enhanced_metadata
             || '\\n\\nDocument chunk:\\n'
             || chunks.value as contextualized_chunk
-        from updated_uris
-        inner join parsed_documents on updated_uris.source_uri = parsed_documents.source_uri
-        inner join enhanced_metadata on updated_uris.source_uri = enhanced_metadata.source_uri
+        from directory(@documents) as d
+        join parsed_documents 
+            on ('{prefix}://' || d.relative_path) = parsed_documents.source_uri
+        join enhanced_metadata 
+            on ('{prefix}://' || d.relative_path) = enhanced_metadata.source_uri,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             parsed_documents.parsed_content,
             'none',
             {config["chunk_size"]},
             {config["chunk_overlap"]}
         )) as chunks
-    )
-    """
+        """
+
     if insert:
-        query = (
-            ctes
-            + """
-            insert into document_chunks (source_uri, contextualized_chunks)
-            select * from updated_chunks
+        query = f"""
+            insert into document_chunks (source_uri, contextualized_chunk)
+            {select_stmt}
             """
-        )
     else:
-        query = (
-            ctes
-            + """
+        query = f"""
             update document_chunks set
-                contextualized_chunks = updated_chunks.contextualized_chunks
-            from updated_chunks
+                contextualized_chunk = updated_chunks.contextualized_chunk
+            from ({select_stmt}) as updated_chunks
             where document_chunks.source_uri = updated_chunks.source_uri
             """
-        )
     cursor.execute(query)
 
 
 def clear_stage(cursor: SnowflakeCursor) -> None:
-    cursor.execute("remove stage @documents")
+    cursor.execute("remove @documents")
 
 
 def upload_documents(
@@ -239,6 +216,7 @@ def upload_documents(
                 source_uri=source_uri,
                 local_path=source_info.local_path,
                 modified_at_utc=source_info.modified_at_utc,
+                insert=insert,
                 metadata=source_info.metadata,
             )
         parse_documents(cursor, prefix=prefix, insert=insert)
@@ -248,14 +226,26 @@ def upload_documents(
 
 
 def delete_documents(conn: snowflake.connector.SnowflakeConnection, deleted_uris: set[str]) -> None:
+    if not deleted_uris:
+        return
     with conn.cursor() as cursor:
+        # Create a string of placeholders: :1, :2, ..., :N
+        placeholders = ", ".join([f":{i + 1}" for i in range(len(deleted_uris))])
         for table in ALL_TABLES:
-            cursor.execute(f"delete from {table} where source_uri in :1", (deleted_uris,))
+            cursor.execute(
+                f"delete from {table} where source_uri in ({placeholders})",
+                tuple(deleted_uris),
+            )
 
 
-def process_documents(sources: dict[str, DocumentInfo], prefix: str) -> None:
+def process_documents(
+    sources: dict[str, DocumentInfo],
+    prefix: str,
+    conn: snowflake.connector.SnowflakeConnection | None = None,
+) -> None:
     config = load_config()
-    conn = get_snowflake_connection(config)
+    if conn is None:
+        conn = get_snowflake_connection(config)
     targets = get_snowflake_documents(conn, prefix=prefix)
     source_uris = set(sources)
     target_uris = set(targets)
