@@ -50,12 +50,12 @@ create or replace agent <% ctx.env.agent_name %>
     search_document_metadata:
       id_column: "SOURCE_URI"
       max_results: <% ctx.env.agent_metadata_max_results %>
-      search_service: "< ctx.env.database %>.<% ctx.env.schema %>.search_metadata"
+      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.search_metadata"
       title_column: "FILENAME"
       
     search_document_contents:
       id_column: "SOURCE_URI"
       max_results: <% ctx.env.agent_document_max_results %>
-      search_service: "< ctx.env.database %>.<% ctx.env.schema %>.search_contents"
+      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.search_contents"
       title_column: "FILENAME"
   $$;

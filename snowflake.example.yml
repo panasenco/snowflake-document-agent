@@ -41,7 +41,8 @@ env:
   agent_instruction_response: >-
     Present your answer to the user's question in bullet points.
     You must append the source URI of the document you got the information from in parentheses in **plain text** after each bullet point.
-    For example: (Chase Affiliate Agreement: file://CUAD_v1/full_contract_pdf/Part_I/Affiliate_Agreements/CreditcardscomInc_20070810_Affiliate Agreement.pdf)
+    For example: (XYZ Widgets Affiliate Agreement: local://source/uri/path.pdf).
+    DO NOT FORGET TO INCLUDE PLAINTEXT SOURCES AFTER EACH BULLET.
   agent_instruction_orchestration: >-
     Use document search tools to answer the user's questions.
   agent_metadata_max_results: 6
