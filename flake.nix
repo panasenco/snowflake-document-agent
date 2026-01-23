@@ -9,13 +9,15 @@
     let
       system = "x86_64-linux"; # or aarch64-darwin
       pkgs = nixpkgs.legacyPackages.${system};
+      venvDir = "./.venv";
     in
     {
       devShells.${system}.default = pkgs.mkShell {
-        venvDir = "./.venv";
+        inherit venvDir;
         
-        # Ensure snowflake-cli is installed
+        # Ensure ruff and snowflake-cli are installed
         packages = with pkgs; [
+          ruff
           (snowflake-cli.overridePythonAttrs (oldAttrs: { doCheck = false; }))
         ];
 
@@ -34,10 +36,13 @@
         };
 
 
-        # Run when the shell starts
+        # When the shell starts:
+        # Unset PYTHONPATH so that snowflake.cli doesn't pollute the Python namespace
+        # Remove ruff to use the packaged version instead
         postShellHook = ''
           unset PYTHONPATH
           uv sync
+          rm -f ${venvDir}/bin/ruff
         '';
       };
     };
