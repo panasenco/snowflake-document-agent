@@ -220,16 +220,37 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, co
         docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
         assert source_uri in docs
 
+        cursor = snowflake_conn.cursor()
+
+        # Debugging output
+        cursor.execute("list @documents")
+        print(f"\nDEBUG: Stage files: {cursor.fetchall()}")
+
+        cursor.execute("select * from parsed_documents")
+        print(f"DEBUG: parsed_documents content: {cursor.fetchall()}")
+
+        from snowflake_document_agent.common import ALL_TABLES
+
+        for table in ALL_TABLES:
+            cursor.execute(f"select count(*) from {table}")
+            count = cursor.fetchone()[0]
+            assert count == 1, f"Row missing in {table} after ingestion. Expected 1, got {count}"
+
         # 4. Execute - Modification
         new_mod_time = datetime.now(timezone.utc)
         f1.write_text("Updated content for document 1. Still long enough.")
         sources[source_uri].modified_at_utc = new_mod_time
 
-        process_documents(sources, prefix=prefix, conn=snowflake_conn)
+        process_documents(sources, prefix=prefix, conn=snowflake_conn, config=config)
 
         # 5. Verify Modification
         docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
         assert abs((docs[source_uri].modified_at_utc - new_mod_time).total_seconds()) < 2.0
+
+        for table in ALL_TABLES:
+            cursor.execute(f"select count(*) from {table} where source_uri = '{source_uri}'")
+            count = cursor.fetchone()[0]
+            assert count > 0, f"Row missing in {table} after modification"
 
         # 6. Execute - Deletion
         process_documents({}, prefix=prefix, conn=snowflake_conn, config=config)
