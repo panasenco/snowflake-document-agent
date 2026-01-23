@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Python ELT processes to incrementally load document files into Snowflake Document Agent"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0.2",
+    "snowflake-connector-python>=3.13.0",
+]
 
 [project.scripts]
 ingest-local = "snowflake_document_agent.ingest_local:main"
