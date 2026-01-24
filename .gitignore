@@ -1,6 +1,9 @@
 # Ignore the real snowflake.yml config
 /snowflake.yml
 
+# Ignore the private development container configuration
+/.devcontainer/private
+
 # Python
 **/__pycache__
 
