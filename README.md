@@ -6,14 +6,39 @@ Adding a more production-grade pipeline for ingesting new documents incrementall
 
 ## Setup
 
-### Your machine
+### Your computer
+
+First, clone this repository:
 ```sh
 git clone https://github.com/panasenco/snowflake-document-agent.git
 cd snowflake-document-agent
 ```
 
-On most systems: Install [snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation) and [uv](https://docs.astral.sh/uv/getting-started/installation/), then `uv sync`.
-On NixOS: just `nix develop`.
+Then follow one of the below instructions:
+
+<details>
+
+<summary>Manual install</summary>
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
+
+```sh
+uv sync
+```
+
+</details>
+
+<details>
+
+<summary>NixOS</summary>
+
+Run to start a development environment:
+
+```sh
+nix develop
+```
+
+</details>
 
 ### Snowflake
 1.  [Install snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation).

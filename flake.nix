@@ -14,13 +14,12 @@
     {
       devShells.${system}.default = pkgs.mkShell {
         inherit venvDir;
-        
-        # Ensure ruff and snowflake-cli are installed
+
+        # Install ruff separately to avoid linked executable issues
         packages = with pkgs; [
           ruff
-          (snowflake-cli.overridePythonAttrs (oldAttrs: { doCheck = false; }))
         ];
-
+        
         # Packages available in the shell
         buildInputs = with pkgs; [
           python313
@@ -28,20 +27,17 @@
           uv
         ];
 
-        # 1. Tell uv not to download Python; use the one from buildInputs
-        # 2. Force the venv to use the specific Python binary
         env = {
+          # Tell uv not to download Python; use the one from buildInputs
           UV_PYTHON_DOWNLOADS = "never";
           UV_PYTHON = "${pkgs.python313}/bin/python";
+          # Allow Python packages to access C/C++ shared libraries
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
         };
 
 
-        # When the shell starts:
-        # Unset PYTHONPATH so that snowflake.cli doesn't pollute the Python namespace
-        # Remove ruff to use the packaged version instead
+        # Install uv packages and remove ruff to use the packaged version instead
         postShellHook = ''
-          unset PYTHONPATH
           uv sync
           rm -f ${venvDir}/bin/ruff
         '';

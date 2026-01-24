@@ -16,6 +16,7 @@ ingest-local = "snowflake_document_agent.ingest_local:main"
 dev = [
     "pytest>=9.0.2",
     "ruff>=0.9.0",
+    "snowflake-cli>=3.14.0",
 ]
 
 [tool.ruff]
