@@ -4,7 +4,7 @@ from snowflake_document_agent.common import stage_document, get_snowflake_docume
 
 
 @pytest.fixture
-def setup_staged_document(snowflake_conn, tmp_path):
+def setup_staged_document(snowflake_conn, tmp_path, updated_uris):
     """
     Fixture that stages a document for other tests to use.
     Demonstrates best practice of using fixtures for resource dependencies.
@@ -51,7 +51,7 @@ def setup_staged_document(snowflake_conn, tmp_path):
 
 
 @pytest.mark.integration
-def test_stage_document_integration(snowflake_conn, test_schema, tmp_path):
+def test_stage_document_integration(snowflake_conn, test_schema, tmp_path, updated_uris):
     """
     Verifies that stage_document uploads a file to the @documents stage
     and updates the document_metadata table.
@@ -190,7 +190,7 @@ def test_delete_documents_integration(snowflake_conn, test_schema):
 
 
 @pytest.mark.integration
-def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, config):
+def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, test_config):
     """
     Higher-level integration test for process_documents.
     """
@@ -213,10 +213,10 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, co
 
     try:
         # 2. Execute - Initial Ingestion
-        process_documents(sources, prefix=prefix, conn=snowflake_conn, config=config)
+        process_documents(sources, prefix=prefix, conn=snowflake_conn, config=test_config)
 
         # 3. Verify Ingestion
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=test_config)
         assert source_uri in docs
 
         cursor = snowflake_conn.cursor()
@@ -244,10 +244,10 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, co
         f1.write_text("Updated content for document 1. Still long enough.")
         sources[source_uri].modified_at_utc = new_mod_time
 
-        process_documents(sources, prefix=prefix, conn=snowflake_conn, config=config)
+        process_documents(sources, prefix=prefix, conn=snowflake_conn, config=test_config)
 
         # 5. Verify Modification
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=test_config)
         assert abs((docs[source_uri].modified_at_utc - new_mod_time).total_seconds()) < 2.0
 
         for table in ALL_TABLES:
@@ -256,10 +256,10 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, co
             assert count > 0, f"Row missing in {table} after modification"
 
         # 6. Execute - Deletion
-        process_documents({}, prefix=prefix, conn=snowflake_conn, config=config)
+        process_documents({}, prefix=prefix, conn=snowflake_conn, config=test_config)
 
         # 7. Verify Deletion
-        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=config)
+        docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=test_config)
         assert source_uri not in docs
 
     finally:

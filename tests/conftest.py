@@ -5,6 +5,7 @@ import pytest
 import snowflake.connector
 import yaml
 
+from snowflake_document_agent.common import create_temporary_updated_uris
 
 def pytest_addoption(parser):
     parser.addoption("--run-integration", action="store_true", default=False, help="run integration tests")
@@ -25,21 +26,6 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(scope="session")
-def config():
-    """
-    Returns a default config
-    """
-    with open(Path(__file__).parent.parent / "snowflake.example.yml", "r") as config_file:
-        config = yaml.safe_load(config_file)["env"]
-
-    for attribute in ["role", "warehouse", "database", "schema"]:
-        if attribute in config:
-            del config[attribute]
-
-    yield config
-
-
-@pytest.fixture(scope="session")
 def snowflake_conn(pytestconfig):
     """
     Establishes a connection to Snowflake.
@@ -48,9 +34,7 @@ def snowflake_conn(pytestconfig):
     if not pytestconfig.getoption("--run-integration"):
         yield None
         return
-
     conn_name = pytestconfig.getoption("--connection-name")
-
     try:
         conn = snowflake.connector.connect(**({"connection_name": conn_name} if conn_name else {}))
         yield conn
@@ -58,20 +42,14 @@ def snowflake_conn(pytestconfig):
     except Exception as e:
         pytest.fail(f"Failed to connect to Snowflake: {e}")
 
-
 @pytest.fixture(scope="session")
 def test_schema(snowflake_conn):
     """
     Creates a temporary schema for the test session and runs the DDL setup.
     Teardown drops the schema.
     """
-    if not snowflake_conn:
-        yield None
-        return
-
     schema_name = f"TEST_DOCUMENT_AGENT_{int(time())}"
     cursor = snowflake_conn.cursor()
-
     try:
         cursor.execute(f"CREATE SCHEMA {schema_name}")
         cursor.execute(f"USE SCHEMA {schema_name}")
@@ -100,7 +78,6 @@ def test_schema(snowflake_conn):
             pytest.fail(f"DDL file not found at {ddl_path}")
 
         yield schema_name
-
     finally:
         # Teardown
         try:
@@ -108,3 +85,32 @@ def test_schema(snowflake_conn):
         except Exception as e:
             print(f"Warning: Failed to drop test schema {schema_name}: {e}")
         cursor.close()
+
+
+@pytest.fixture(scope="session")
+def test_config(test_schema):
+    """
+    Returns a config dict for the tests
+    """
+    with open(Path(__file__).parent.parent / "snowflake.example.yml", "r") as config_file:
+        config = yaml.safe_load(config_file)["env"]
+    # Don't override role, warehouse, or database in the connection
+    for attribute in ["role", "warehouse", "database"]:
+        if attribute in config:
+            del config[attribute]
+    # Override the schema
+    config["schema"] = test_schema
+    yield config
+
+
+@pytest.fixture()
+def updated_uris(snowflake_conn, test_config):
+    """
+    Create the temporary table `updated_uris`
+    Teardown drops the table.
+    """
+    create_temporary_updated_uris(snowflake_conn, config=test_config)
+    table_identifier = f"{test_config['schema']}.updated_uris"
+    yield table_identifier
+    with snowflake_conn.cursor() as cursor:
+        cursor.execute(f"drop table {table_identifier}")
