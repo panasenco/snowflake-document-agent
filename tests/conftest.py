@@ -7,6 +7,7 @@ import yaml
 
 from snowflake_document_agent.common import create_temporary_updated_uris
 
+
 def pytest_addoption(parser):
     parser.addoption("--run-integration", action="store_true", default=False, help="run integration tests")
     parser.addoption("--connection-name", action="store", default=None, help="Snowflake connection name from config")
@@ -41,6 +42,7 @@ def snowflake_conn(pytestconfig):
         conn.close()
     except Exception as e:
         pytest.fail(f"Failed to connect to Snowflake: {e}")
+
 
 @pytest.fixture(scope="session")
 def test_schema(snowflake_conn):

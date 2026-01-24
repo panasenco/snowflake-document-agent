@@ -266,3 +266,58 @@ def test_process_documents_integration(snowflake_conn, test_schema, tmp_path, te
         # Cleanup any leftover data if necessary
         # process_documents({}, prefix=prefix) should have cleaned up
         pass
+
+
+@pytest.mark.integration
+def test_process_documents_prefix_isolation(snowflake_conn, test_schema, tmp_path, test_config):
+    """
+    Verifies that process_documents only affects documents with the specified prefix.
+    This test reproduces a bug where multiple prefixes might interfere with each other.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    from snowflake_document_agent.common import DocumentInfo, process_documents, get_snowflake_documents
+
+    # 1. Setup - Two prefixes and documents
+    prefix1 = "prefix1"
+    prefix2 = "prefix2"
+
+    docs_dir = tmp_path / "docs_isolation"
+    docs_dir.mkdir()
+
+    f1 = docs_dir / "doc1.txt"
+    f1.write_text("Content for prefix 1")
+    f2 = docs_dir / "doc2.txt"
+    f2.write_text("Content for prefix 2")
+
+    uri1 = f"{prefix1}://doc1.txt"
+    uri2 = f"{prefix2}://doc2.txt"
+
+    # We use fixed timestamps to avoid issues with fast execution
+    t1 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    t2 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    sources1 = {uri1: DocumentInfo(modified_at_utc=t1, local_path=f1)}
+    sources2 = {uri2: DocumentInfo(modified_at_utc=t2, local_path=f2)}
+
+    try:
+        # 2. Ingest prefix 1
+        process_documents(sources1, prefix=prefix1, conn=snowflake_conn, config=test_config)
+        # 3. Ingest prefix 2
+        process_documents(sources2, prefix=prefix2, conn=snowflake_conn, config=test_config)
+        # 4. Verify both exist
+        docs1 = get_snowflake_documents(snowflake_conn, prefix=prefix1, config=test_config)
+        docs2 = get_snowflake_documents(snowflake_conn, prefix=prefix2, config=test_config)
+        assert uri1 in docs1
+        assert uri2 in docs2
+    finally:
+        # Final cleanup
+        try:
+            process_documents({}, prefix=prefix1, conn=snowflake_conn, config=test_config)
+        except Exception:
+            pass
+        try:
+            process_documents({}, prefix=prefix2, conn=snowflake_conn, config=test_config)
+        except Exception:
+            pass
