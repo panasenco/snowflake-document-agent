@@ -28,9 +28,6 @@
         ];
 
         env = {
-          # Tell uv not to download Python; use the one from buildInputs
-          UV_PYTHON_DOWNLOADS = "never";
-          UV_PYTHON = "${pkgs.python313}/bin/python";
           # Allow Python packages to access C/C++ shared libraries
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
         };

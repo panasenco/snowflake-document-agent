@@ -30,6 +30,20 @@ uv sync
 
 <details>
 
+<summary>Dev Container</summary>
+
+In Visual Studio Code: Follow [this guide](https://code.visualstudio.com/docs/devcontainers/containers) to learn how to use development containers in Visual Studio Code.
+The TL;DR is that if you have Docker installed on your system, a prompt with a button to reopen the folder in a dev container should just appear when you open the folder in VS Code.
+You can also click the `><` icon in the bottom left and choose "Reopen in Container".
+
+The Dev Container will attempt to automatically mount your `~/.snowflake` directory.
+Note that if you use private keys, there's some pain around making absolute paths work with `snowflake-connector-python`.
+See [this issue](https://github.com/snowflakedb/snowflake-connector-python/issues/2746).
+
+</details>
+
+<details>
+
 <summary>NixOS</summary>
 
 Run to start a development environment:
