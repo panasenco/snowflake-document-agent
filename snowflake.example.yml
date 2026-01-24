@@ -6,8 +6,9 @@ env:
   schema: "documents"
   warehouse: "document_agent_wh"
   warehouse_size: "xsmall"
+  warehouse_auto_suspend: 30
   role: "document_agent_role"
-  embedding_model: "snowflake-arctic-embed-l-v2.0"
+  search_embedding_model: "snowflake-arctic-embed-l-v2.0"
   metadata_model: "claude-4-sonnet"
   metadata_first_chars: 4000
   metadata_prompt: |

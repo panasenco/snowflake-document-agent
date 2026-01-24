@@ -54,7 +54,9 @@ nix develop
 ## Running the pipeline
 
 ### Ingest local files
+
 Run this command to upload some documents to Snowflake and to see what changes are being synchronized:
+
 ```sh
 ingest-local path/to/your/documents --verbose
 ```

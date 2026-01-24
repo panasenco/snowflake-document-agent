@@ -2,7 +2,9 @@
 use role <% ctx.env.admin_role %>;
 create database if not exists <% ctx.env.database %>;
 create schema if not exists <% ctx.env.database %>.<% ctx.env.schema %>;
-create warehouse if not exists <% ctx.env.warehouse %> with warehouse_size = <% ctx.env.warehouse_size %>;
+create warehouse if not exists <% ctx.env.warehouse %> with
+    warehouse_size = <% ctx.env.warehouse_size %>
+    auto_suspend = <% ctx.env.warehouse_auto_suspend %>;
 create role if not exists <% ctx.env.role %>;
 grant usage, operate on warehouse <% ctx.env.warehouse %> to role <% ctx.env.role %>;
 grant usage on database <% ctx.env.database %> to role <% ctx.env.role %>;

@@ -3,20 +3,26 @@ use role <% ctx.env.role %>;
 use schema <% ctx.env.database %>.<% ctx.env.schema %>;
 
 -- Metadata search
-create cortex search service if not exists search_metadata
+create or replace cortex search service search_metadata
     on enhanced_metadata
     warehouse = <% ctx.env.warehouse %>
-    target_lag = '1 minute'
-    embedding_model = '<% ctx.env.embedding_model %>'
+    target_lag = '1 day'
+    embedding_model = '<% ctx.env.search_embedding_model %>'
+    initialize = on_schedule
     as (select *, regexp_substr(source_uri, '[^/]*$') as filename from enhanced_metadata);
 
+alter cortex search service search_metadata suspend indexing;
+
 -- Content search
-create cortex search service if not exists search_contents
+create or replace cortex search service search_contents
     on contextualized_chunk
     warehouse = <% ctx.env.warehouse %>
-    target_lag = '1 minute'
-    embedding_model = '<% ctx.env.embedding_model %>'
+    target_lag = '1 day'
+    embedding_model = '<% ctx.env.search_embedding_model %>'
+    initialize = on_schedule
     as (select *, regexp_substr(source_uri, '[^/]*$') as filename from document_chunks);
+
+alter cortex search service search_contents suspend indexing;
 
 -- Agent
 create or replace agent <% ctx.env.agent_name %>

@@ -249,6 +249,10 @@ def delete_documents(conn: SnowflakeConnection, *, deleted_uris: set[str], confi
                 tuple(deleted_uris),
             )
 
+def refresh_search_services(conn: SnowflakeConnection, *, config: dict[str, Any]) -> None:
+    with create_cursor(conn, config) as cursor:
+        for search_service in ["search_metadata", "search_contents"]:
+            cursor.execute(f"alter cortex search service {search_service} refresh")
 
 def process_documents(
     sources: dict[str, DocumentInfo],
@@ -297,3 +301,5 @@ def process_documents(
             config=config,
             insert=False,
         )
+    if deleted_uris or added_uris or modified_uris:
+        refresh_search_services(conn, config=config)
