@@ -12,7 +12,18 @@
             "source": "${localEnv:HOME}/.snowflake",
             "target": "/home/vscode/.snowflake",
             "type": "bind"
+        },
+        {
+            "source": "snowflake-document-agent-cache",
+            "target": "/home/vscode/.cache",
+            "type": "volume"
+        },
+        {
+            "source": "snowflake-document-agent-venv",
+            "target": "/home/vscode/.venv",
+            "type": "volume"
         }
     ],
+    "onCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.cache /home/vscode/.venv",
     "updateContentCommand": "/usr/local/bin/python3 -m pip install uv && /home/vscode/.local/bin/uv sync"
 }
