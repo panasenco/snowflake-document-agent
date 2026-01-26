@@ -2,7 +2,7 @@
     "name": "Snowflake Document Agent",
     "image": "mcr.microsoft.com/devcontainers/python:3.13-trixie",
     "containerEnv": {
-        "UV_PROJECT_ENVIRONMENT": "/home/vscode/.venv"
+        "UV_PROJECT_ENVIRONMENT": "/home/vscode/.cache/uv-venv"
     },
     "remoteEnv": {
         "PATH": "${containerEnv:UV_PROJECT_ENVIRONMENT}/bin:${containerEnv:PATH}"
@@ -17,13 +17,8 @@
             "source": "snowflake-document-agent-cache",
             "target": "/home/vscode/.cache",
             "type": "volume"
-        },
-        {
-            "source": "snowflake-document-agent-venv",
-            "target": "/home/vscode/.venv",
-            "type": "volume"
         }
     ],
-    "onCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.cache /home/vscode/.venv",
+    "onCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.cache",
     "updateContentCommand": "/usr/local/bin/python3 -m pip install uv && /home/vscode/.local/bin/uv sync"
 }
