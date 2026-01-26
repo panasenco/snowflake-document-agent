@@ -81,14 +81,13 @@ nix develop
 </details>
 
 ### Snowflake
-1.  [Install snowflake-cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation).
-2.  Configure the file [connections.toml](https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-connect#connecting-using-the-connections-toml-file) which will work for both snowflake-cli and snowflake-connector-python.
-3.  Copy the file `snowflake.example.yml` to `snowflake.yml` and change the values.
-4.  Inspect each setup script in `./scripts/snowflake-cli/setup_*`.
-    Only run each script if it makes sense to you and aligns with your organization's best practices!
+1.  Configure the file [~/.snowflake/connections.toml](https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-connect#connecting-using-the-connections-toml-file) which will work for both snowflake-cli and snowflake-connector-python.
+2.  Copy the file `snowflake.example.yml` to `snowflake.yml` and update the values for your use case.
+3.  Inspect each setup script in `./scripts/snowflake-cli/setup_*`.
+    Only run each script if it makes sense to you and conforms to your organization's policies!
     Run each script with a command like:
     ```sh
-    snow sql -f scripts/snowflake-cli/script_name.sql
+    snow sql -f scripts/snowflake-cli/setup_00_example.sql
     ```
 
 ## Running the pipeline
