@@ -58,6 +58,20 @@ For this reason, the repository is configured to always use LF for line endings 
 Then you can switch between Windows and the Linux development container without either system freaking out about file line endings.
 For more information and history, see the blog post [Mind the End of Your Line](https://adaptivepatchwork.com/2012/03/01/mind-the-end-of-your-line/).
 
+#### Alternative Python package registries
+
+If your corporate environment blocks the Python Package index `pypi.org`, you will have to configure `uv` to use the corporate package index by default instead.
+Create a `uv.toml` file in the root of the repo:
+
+```toml
+[[index]]
+name = "my-private-index"
+url = "https://private.index.mycorp.com/index/api/pypi/simple"
+default = true
+```
+
+You will also need to set the environment variable `UV_LOCKED` to `true` in your dev container definition so as to not overwrite the URLs in `uv.lock` with your corporate package index URLs.
+
 </details>
 
 <details>

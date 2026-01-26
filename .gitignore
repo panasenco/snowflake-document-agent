@@ -4,6 +4,9 @@
 # Ignore the private development container configuration
 /.devcontainer/private
 
+# Ignore corporate uv package manager settings
+/uv.toml
+
 # Python
 **/__pycache__
 
