@@ -1,9 +1,11 @@
 {
     "name": "Snowflake Document Agent",
     "image": "mcr.microsoft.com/devcontainers/python:3.13-trixie",
-    "postCreateCommand": "/usr/local/bin/python3 -m pip install uv && /home/vscode/.local/bin/uv sync",
+    "containerEnv": {
+        "UV_PROJECT_ENVIRONMENT": "/home/vscode/.venv"
+    },
     "remoteEnv": {
-        "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerEnv:PATH}"
+        "PATH": "${containerEnv:UV_PROJECT_ENVIRONMENT}/bin:${containerEnv:PATH}"
     },
     "mounts": [
         {
@@ -11,5 +13,6 @@
             "target": "/home/vscode/.snowflake",
             "type": "bind"
         }
-    ]
+    ],
+    "updateContentCommand": "/usr/local/bin/python3 -m pip install uv && /home/vscode/.local/bin/uv sync"
 }
