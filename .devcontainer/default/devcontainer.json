@@ -14,6 +14,11 @@
             "type": "bind"
         },
         {
+            "source": "${localEnv:HOME}${localenv:USERPROFILE}/.ssh",
+            "target": "/home/vscode/.ssh",
+            "type": "bind"
+        },
+        {
             "source": "snowflake-document-agent-cache",
             "target": "/home/vscode/.cache",
             "type": "volume"
@@ -21,5 +26,5 @@
     ],
     "onCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.cache",
     "updateContentCommand": "/usr/local/bin/python3 -m pip install uv && /home/vscode/.local/bin/uv sync",
-    "postCreateCommand": "mkdir -p /home/vscode/.snowflake && sudo chown -R vscode:vscode /home/vscode/.snowflake && sudo find /home/vscode/.snowflake -type d -exec chmod 0700 {} \\; && sudo find /home/vscode/.snowflake -type f -exec chmod 0600 {} \\;"
+    "postCreateCommand": "mkdir -p /home/vscode/.snowflake && sudo chown -R vscode:vscode /home/vscode/.snowflake && sudo find /home/vscode/.snowflake -type d -exec chmod 0700 {} \\; && sudo find /home/vscode/.snowflake -type f -exec chmod 0600 {} \\; && mkdir -p /home/vscode/.ssh && sudo chown -R vscode:vscode /home/vscode/.ssh && sudo find /home/vscode/.ssh -type d -exec chmod 0700 {} \\; && sudo find /home/vscode/.ssh -type f -exec chmod 0600 {} \\;"
 }
