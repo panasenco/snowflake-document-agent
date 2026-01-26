@@ -3,7 +3,7 @@ use role <% ctx.env.role %>;
 use schema <% ctx.env.database %>.<% ctx.env.schema %>;
 
 -- Stage for raw document files
-create stage if not exists documents directory = (enable = true) encryption = (type = 'SNOWFLAKE_SSE');
+create stage if not exists documents encryption = (type = 'SNOWFLAKE_SSE');
 
 -- Table containing document modified timestamps and ground-truth metadata
 create table if not exists document_metadata (

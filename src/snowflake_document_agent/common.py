@@ -103,9 +103,6 @@ def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> No
     """
     Parses all documents from the stage and inserts into parsed_documents.
     """
-    # Refresh the stage for directory() to be up-to-date
-    cursor.execute("alter stage documents refresh")
-
     select_stmt = """
         select
             source_uri,
