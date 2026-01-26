@@ -9,7 +9,7 @@
     },
     "mounts": [
         {
-            "source": "${localEnv:HOME}/.snowflake",
+            "source": "${localEnv:HOME}${localenv:USERPROFILE}/.snowflake",
             "target": "/home/vscode/.snowflake",
             "type": "bind"
         },
@@ -20,5 +20,6 @@
         }
     ],
     "onCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.cache",
-    "updateContentCommand": "/usr/local/bin/python3 -m pip install uv && /home/vscode/.local/bin/uv sync"
+    "updateContentCommand": "/usr/local/bin/python3 -m pip install uv && /home/vscode/.local/bin/uv sync",
+    "postCreateCommand": "mkdir -p /home/vscode/.snowflake && sudo chown -R vscode:vscode /home/vscode/.snowflake && sudo find /home/vscode/.snowflake -type d -exec chmod 0700 {} \\; && sudo find /home/vscode/.snowflake -type f -exec chmod 0600 {} \\;"
 }

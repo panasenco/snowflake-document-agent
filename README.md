@@ -54,26 +54,17 @@ Then when you select "Reopen in Container", VS Code will ask you which configura
 
 Note that `uv` installs packages in the folder `.venv` in your workspace by default, but on a Windows host your workspace is stored in the Windows filesystem, and the interface between the two filesystems is painfully slow. To improve performance, set `UV_PROJECT_ENVIRONMENT` to a location elsewhere in the container.
 
+#### Alternative Python package registries
+
+If your corporate environment blocks the Python Package index `pypi.org`, you won't be able to take advantage of the lock file `uv.lock`.
+In that case, rather than bothering with configuring `uv` to use the corporate registry, just do something like `/usr/local/bin/python3 -m pip install --group dev --editable /workspaces/snowflake-document-agent` and let the (hopefully sane) `pip` configuration in your corporate Docker image take care of things.
+
 #### Line ending issues
 
 If you're running the development container on a Windows machine, you might run into line ending issues.
 For this reason, the repository is configured to always use LF for line endings in `.gitattributes` and `.vscode/settings.json`, even on Windows.
 Then you can switch between Windows and the Linux development container without either system freaking out about file line endings.
 For more information and history, see the blog post [Mind the End of Your Line](https://adaptivepatchwork.com/2012/03/01/mind-the-end-of-your-line/).
-
-#### Alternative Python package registries
-
-If your corporate environment blocks the Python Package index `pypi.org`, you will have to configure `uv` to use the corporate package index by default instead.
-Create a `uv.toml` file in the root of the repo:
-
-```toml
-[[index]]
-name = "my-private-index"
-url = "https://private.index.mycorp.com/index/api/pypi/simple"
-default = true
-```
-
-You will also need to set the environment variable `UV_LOCKED` to `true` in your dev container definition so as to not overwrite the URLs in `uv.lock` with your corporate package index URLs.
 
 </details>
 
