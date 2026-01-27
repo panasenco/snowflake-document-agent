@@ -1,9 +1,10 @@
 -- DDL of tables and stages needed for the document agent
-use role <% ctx.env.role %>;
+use role <% ctx.env.admin_role %>;
 use schema <% ctx.env.database %>.<% ctx.env.schema %>;
 
 -- Stage for raw document files
 create stage if not exists documents encryption = (type = 'SNOWFLAKE_SSE');
+grant read, write on stage documents to role <% ctx.env.role %>;
 
 -- Table containing document modified timestamps and ground-truth metadata
 create table if not exists document_metadata (
@@ -11,19 +12,24 @@ create table if not exists document_metadata (
     modified_at_utc timestamp_ntz,
     metadata string
 ) change_tracking = true;
+grant select, insert, delete, update, truncate on table document_metadata to role <% ctx.env.role %>;
 
 -- Underlying table for metadata search
 create table if not exists enhanced_metadata (
     source_uri string,
     enhanced_metadata string
 ) change_tracking = true;
+grant select, insert, delete, update, truncate on table enhanced_metadata to role <% ctx.env.role %>;
 
 -- Underlying tables for content search
 create table if not exists parsed_documents (
     source_uri string,
     parsed_content string
 ) change_tracking = true;
+grant select, insert, delete, update, truncate on table parsed_documents to role <% ctx.env.role %>;
+
 create table if not exists document_chunks (
     source_uri string,
     contextualized_chunk string
 ) change_tracking = true;
+grant select, insert, delete, update, truncate on table document_chunks to role <% ctx.env.role %>;
