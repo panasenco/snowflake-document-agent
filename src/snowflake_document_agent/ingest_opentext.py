@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import logging
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from .common import DocumentInfoProtocol
@@ -27,8 +28,15 @@ class OpenTextDocumentInfo(DocumentInfoProtocol):
     @property
     def local_path(self) -> Path:
         """Download document from OpenText on-demand and return local path."""
-        # Minimal implementation to make test pass
-        return Path("/tmp/test.pdf")
+        # Call OpenText API to get content
+        response = self.opentext_api_client.call("GET", f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
+
+        # Write content to temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        temp_file.write(response.content)
+        temp_file.close()
+
+        return Path(temp_file.name)
 
 
 def get_opentext_documents(opentext_nodes: list[int], prefix: str) -> dict[str, OpenTextDocumentInfo]:
