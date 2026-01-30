@@ -6,6 +6,7 @@ import snowflake.connector
 import yaml
 
 from snowflake_document_agent.common import create_temporary_updated_uris
+from snowflake_document_agent.ingest_opentext import OpenTextClient
 
 
 def pytest_addoption(parser):
@@ -87,6 +88,26 @@ def test_schema(snowflake_conn):
         except Exception as e:
             print(f"Warning: Failed to drop test schema {schema_name}: {e}")
         cursor.close()
+
+
+@pytest.fixture(scope="session")
+def opentext_conn(pytestconfig):
+    """
+    Creates an OpenText client for integration tests.
+    Only available when --run-integration is set to true.
+    Reads configuration from environment variables.
+    """
+    if not pytestconfig.getoption("--run-integration"):
+        yield None
+        return
+
+    try:
+        # Create OpenText client using environment variables
+        # This assumes the client will be modified to support env vars as fallback
+        client = OpenTextClient()
+        yield client
+    except Exception as e:
+        pytest.fail(f"Failed to create OpenText client: {e}")
 
 
 @pytest.fixture(scope="session")

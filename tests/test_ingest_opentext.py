@@ -3,9 +3,9 @@
 import pytest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from snowflake_document_agent.ingest_opentext import OpenTextDocumentInfo
+from snowflake_document_agent.ingest_opentext import OpenTextDocumentInfo, OpenTextClient
 
 
 def test_opentext_document_info_creation():
@@ -716,3 +716,130 @@ def test_opentext_client_does_not_retry_auth_on_401_errors():
 
         # Should have made only 1 auth call (no retries for 401)
         assert mock_post.call_count == 1
+
+
+def test_opentext_client_reads_from_environment_variables():
+    """Test that OpenTextClient reads parameters from environment variables when not provided."""
+    # Mock environment variables
+    env_vars = {
+        "OPENTEXT_CLIENT_ID": "env_client_id",
+        "OPENTEXT_CLIENT_SECRET": "env_client_secret",
+        "OPENTEXT_API_PREFIX": "https://env.api.example.com",
+        "OPENTEXT_APP_CLIENT_ID": "env_app_client",
+        "OPENTEXT_APP_CLIENT_SECRET": "env_app_secret",
+    }
+
+    with (
+        patch.dict("os.environ", env_vars, clear=False),
+        patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post,
+    ):
+        # Mock auth response for init
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        # Create client without explicit parameters - should read from env vars
+        client = OpenTextClient()
+
+        # Should have read values from environment variables
+        assert client.client_id == "env_client_id"
+        assert client.client_secret == "env_client_secret"
+        assert client.api_prefix == "https://env.api.example.com"
+        assert client.app_client_id == "env_app_client"
+        assert client.app_client_secret == "env_app_secret"
+
+        # Should have made auth request with env var values
+        mock_post.assert_called_once_with(
+            "https://env.api.example.com/opentext/cloud/v1/auth",
+            headers={},
+            data={
+                "grant_type": "client_credentials",
+                "client_id": "env_client_id",
+                "client_secret": "env_client_secret",
+            },
+        )
+
+
+def test_opentext_client_explicit_params_override_environment():
+    """Test that explicit parameters override environment variables."""
+    # Set environment variables
+    env_vars = {
+        "OPENTEXT_CLIENT_ID": "env_client_id",
+        "OPENTEXT_CLIENT_SECRET": "env_client_secret",
+        "OPENTEXT_API_PREFIX": "https://env.api.example.com",
+        "OPENTEXT_APP_CLIENT_ID": "env_app_client",
+        "OPENTEXT_APP_CLIENT_SECRET": "env_app_secret",
+    }
+
+    with (
+        patch.dict("os.environ", env_vars, clear=False),
+        patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post,
+    ):
+        # Mock auth response for init
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        # Create client with explicit parameters - should use these instead of env vars
+        client = OpenTextClient(
+            client_id="explicit_client_id",
+            client_secret="explicit_client_secret",
+            api_prefix="https://explicit.api.example.com",
+            app_client_id="explicit_app_client",
+            app_client_secret="explicit_app_secret",
+        )
+
+        # Should use explicit values, not environment variables
+        assert client.client_id == "explicit_client_id"
+        assert client.client_secret == "explicit_client_secret"
+        assert client.api_prefix == "https://explicit.api.example.com"
+        assert client.app_client_id == "explicit_app_client"
+        assert client.app_client_secret == "explicit_app_secret"
+
+        # Should have made auth request with explicit values
+        mock_post.assert_called_once_with(
+            "https://explicit.api.example.com/opentext/cloud/v1/auth",
+            headers={},
+            data={
+                "grant_type": "client_credentials",
+                "client_id": "explicit_client_id",
+                "client_secret": "explicit_client_secret",
+            },
+        )
+
+
+def test_opentext_client_raises_error_when_missing_parameters():
+    """Test that OpenTextClient raises error when required parameters are missing."""
+    # Clear any existing environment variables and don't provide parameters
+    with patch.dict("os.environ", {}, clear=True):
+        with pytest.raises(ValueError) as exc_info:
+            OpenTextClient()
+
+        error_msg = str(exc_info.value)
+        assert "Missing required OpenText parameters" in error_msg
+        assert "OPENTEXT_CLIENT_ID" in error_msg
+        assert "OPENTEXT_CLIENT_SECRET" in error_msg
+        assert "OPENTEXT_API_PREFIX" in error_msg
+        assert "OPENTEXT_APP_CLIENT_ID" in error_msg
+        assert "OPENTEXT_APP_CLIENT_SECRET" in error_msg
+
+
+@pytest.mark.integration
+def test_opentext_conn_fixture_integration(opentext_conn):
+    """Test that opentext_conn fixture works properly for integration tests."""
+    if opentext_conn is None:
+        pytest.skip("Integration tests not enabled (use --run-integration)")
+
+    # Should have an OpenTextClient instance
+    assert isinstance(opentext_conn, OpenTextClient)
+
+    # Should have all required attributes populated from environment
+    assert opentext_conn.client_id
+    assert opentext_conn.client_secret
+    assert opentext_conn.api_prefix
+    assert opentext_conn.app_client_id
+    assert opentext_conn.app_client_secret
+
+    # Should have authentication headers set
+    assert opentext_conn.headers
+    assert "authorization" in opentext_conn.headers
