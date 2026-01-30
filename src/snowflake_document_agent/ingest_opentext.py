@@ -90,7 +90,8 @@ class OpenTextClient:
         # Store headers for reuse
         self.headers = {
             "authorization": f"Bearer {access_token}",
-            f"{self.app_client_id}": self.app_client_secret,  # App credentials as headers
+            "app-client-id": self.app_client_id,  # App credentials as standard headers
+            "app-client-secret": self.app_client_secret,
         }
 
     @retry(
