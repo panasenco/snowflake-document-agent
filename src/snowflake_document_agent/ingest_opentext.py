@@ -73,8 +73,11 @@ class OpenTextDocumentInfo(DocumentInfoProtocol):
         # Call OpenText API to get content
         response = self.opentext_api_client.call("GET", f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
 
-        # Write content to temporary file
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        # Extract file extension from opentext_name
+        file_suffix = Path(self.opentext_name).suffix
+
+        # Write content to temporary file with opentext_id prefix and correct extension
+        temp_file = tempfile.NamedTemporaryFile(delete=False, prefix=f"{self.opentext_id}_", suffix=file_suffix)
         temp_file.write(response.content)
         temp_file.close()
 
