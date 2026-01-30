@@ -542,6 +542,167 @@ def test_get_opentext_documents_handles_nested_folders():
         assert nested_doc2.opentext_name == "nested_doc2.xlsx"
 
 
+def test_get_opentext_documents_handles_shortcut():
+    """Test that get_opentext_documents handles Shortcut nodes by following original_id."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import get_opentext_documents, OpenTextClient, OpenTextDocumentInfo
+
+    # Mock the client
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        # Mock the client.call method for shortcut scenario
+        def mock_call_side_effect(method, path):
+            mock_response = Mock()
+
+            if path == "opentext/cloud/v1/nodes/500":
+                # Shortcut node info
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 500,
+                        "name": "shortcut_to_doc.pdf",
+                        "modify_date": "2024-01-15T12:00:00Z",
+                        "type_name": "Shortcut",
+                        "original_id": 600,  # Points to the actual document
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/600":
+                # Actual document that the shortcut points to
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 600,
+                        "name": "actual_document.pdf",
+                        "modify_date": "2024-01-15T12:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+
+            return mock_response
+
+        client.call = Mock(side_effect=mock_call_side_effect)
+
+        # Should follow the shortcut and return the actual document
+        result = get_opentext_documents(client, opentext_nodes=[500], prefix="opentext")
+
+        # Should be a dict with one entry for the actual document (using shortcut name)
+        assert isinstance(result, dict)
+        assert len(result) == 1
+
+        # Should have the document accessible via shortcut name
+        expected_uri = "opentext://shortcut_to_doc.pdf"
+        assert expected_uri in result
+
+        # Document info should point to the actual document but preserve shortcut name
+        doc_info = result[expected_uri]
+        assert isinstance(doc_info, OpenTextDocumentInfo)
+        assert doc_info.opentext_id == 600  # Actual document ID
+        assert doc_info.opentext_name == "shortcut_to_doc.pdf"  # Shortcut name preserved
+
+
+def test_get_opentext_documents_handles_multiple_shortcuts():
+    """Test that get_opentext_documents handles multiple shortcuts correctly."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import get_opentext_documents, OpenTextClient, OpenTextDocumentInfo
+
+    # Mock the client
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        # Mock multiple shortcuts pointing to different documents
+        def mock_call_side_effect(method, path):
+            mock_response = Mock()
+
+            if path == "opentext/cloud/v1/nodes/700":
+                # First shortcut
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 700,
+                        "name": "link_to_report.docx",
+                        "modify_date": "2024-01-15T12:00:00Z",
+                        "type_name": "Shortcut",
+                        "original_id": 710,
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/800":
+                # Second shortcut
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 800,
+                        "name": "link_to_spreadsheet.xlsx",
+                        "modify_date": "2024-01-16T12:00:00Z",
+                        "type_name": "Shortcut",
+                        "original_id": 810,
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/710":
+                # First actual document
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 710,
+                        "name": "quarterly_report.docx",
+                        "modify_date": "2024-01-15T12:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/810":
+                # Second actual document
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 810,
+                        "name": "budget_data.xlsx",
+                        "modify_date": "2024-01-16T12:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+
+            return mock_response
+
+        client.call = Mock(side_effect=mock_call_side_effect)
+
+        # Should handle multiple shortcuts
+        result = get_opentext_documents(client, opentext_nodes=[700, 800], prefix="opentext")
+
+        # Should be a dict with two entries
+        assert isinstance(result, dict)
+        assert len(result) == 2
+
+        # Should have both shortcuts resolved
+        assert "opentext://link_to_report.docx" in result
+        assert "opentext://link_to_spreadsheet.xlsx" in result
+
+        # Verify first shortcut resolution
+        doc1 = result["opentext://link_to_report.docx"]
+        assert isinstance(doc1, OpenTextDocumentInfo)
+        assert doc1.opentext_id == 710  # Actual document ID
+        assert doc1.opentext_name == "link_to_report.docx"  # Shortcut name
+
+        # Verify second shortcut resolution
+        doc2 = result["opentext://link_to_spreadsheet.xlsx"]
+        assert isinstance(doc2, OpenTextDocumentInfo)
+        assert doc2.opentext_id == 810  # Actual document ID
+        assert doc2.opentext_name == "link_to_spreadsheet.xlsx"  # Shortcut name
+
+
 def test_opentext_client_retries_on_server_errors():
     """Test that OpenTextClient.call() retries on server errors (500, 502, etc) but not 404."""
     from unittest.mock import patch

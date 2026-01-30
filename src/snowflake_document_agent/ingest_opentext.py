@@ -201,6 +201,31 @@ def get_opentext_documents(
             child_documents = get_opentext_documents(client, opentext_nodes=child_ids, prefix=prefix)
             result.update(child_documents)
 
+        elif node_type == "Shortcut":
+            # Handle shortcut - follow original_id but preserve shortcut name
+            shortcut_name = node_data["name"]
+            original_id = node_data["original_id"]
+            modify_date_str = node_data["modify_date"]
+            modify_date = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
+
+            # Get the original document to access its content
+            original_documents = get_opentext_documents(client, opentext_nodes=[original_id], prefix=prefix)
+
+            # Update the result with shortcut name instead of original name
+            for original_uri, doc_info in original_documents.items():
+                # Create new URI using shortcut name
+                shortcut_uri = f"{prefix}://{shortcut_name}"
+
+                # Create new DocumentInfo with original document ID but shortcut name and date
+                shortcut_doc_info = OpenTextDocumentInfo(
+                    modified_at_utc=modify_date,
+                    opentext_id=doc_info.opentext_id,  # Keep original document ID for content access
+                    opentext_name=shortcut_name,  # Use shortcut name
+                    opentext_api_client=client,
+                )
+
+                result[shortcut_uri] = shortcut_doc_info
+
     return result
 
 
