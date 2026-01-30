@@ -73,7 +73,9 @@ def test_local_path_downloads_from_opentext():
     result = doc_info.local_path
 
     # Should have called the real OpenText content API
-    mock_client.call.assert_called_once_with("GET", "opentext/cloud/v1/nodes/12345/content")
+    from snowflake_document_agent.ingest_opentext import HttpMethod
+
+    mock_client.call.assert_called_once_with(HttpMethod.GET, "opentext/cloud/v1/nodes/12345/content")
 
     # Should return a path to a file that exists
     assert isinstance(result, Path)
@@ -172,6 +174,7 @@ def test_opentext_client_authenticates_at_init():
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_auth_response.raise_for_status.return_value = None
         mock_post.return_value = mock_auth_response
 
         client = OpenTextClient(
@@ -182,9 +185,10 @@ def test_opentext_client_authenticates_at_init():
             app_client_secret="app_secret",
         )
 
-        # Should have made auth request during init
+        # Should have made auth request during init (now includes headers due to call() method)
         mock_post.assert_called_once_with(
             "https://api.example.com/opentext/cloud/v1/auth",
+            headers={},
             data={"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "test_secret"},
         )
 
@@ -226,7 +230,9 @@ def test_opentext_client_call_method():
         mock_get.return_value = mock_api_response
 
         # Make API call
-        result = client.call("GET", "opentext/cloud/v1/nodes/12345/content")
+        from snowflake_document_agent.ingest_opentext import HttpMethod
+
+        result = client.call(HttpMethod.GET, "opentext/cloud/v1/nodes/12345/content")
 
         # Should NOT have made another auth request
         mock_post.assert_not_called()
@@ -533,3 +539,180 @@ def test_get_opentext_documents_handles_nested_folders():
         assert isinstance(nested_doc2, OpenTextDocumentInfo)
         assert nested_doc2.opentext_id == 400
         assert nested_doc2.opentext_name == "nested_doc2.xlsx"
+
+
+def test_opentext_client_retries_on_server_errors():
+    """Test that OpenTextClient.call() retries on server errors (500, 502, etc) but not 404."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import OpenTextClient
+    import requests
+
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        # Mock auth response for init
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        with patch("snowflake_document_agent.ingest_opentext.requests.get") as mock_get:
+            # First call fails with 500, second call succeeds
+            mock_error_response = Mock()
+            mock_error_response.status_code = 500
+            mock_error_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+                response=mock_error_response
+            )
+
+            mock_success_response = Mock()
+            mock_success_response.status_code = 200
+            mock_success_response.content = b"success content"
+            mock_success_response.raise_for_status.return_value = None
+
+            mock_get.side_effect = [mock_error_response, mock_success_response]
+
+            # Should eventually succeed after retry
+            from snowflake_document_agent.ingest_opentext import HttpMethod
+
+            result = client.call(HttpMethod.GET, "opentext/cloud/v1/nodes/12345")
+
+            # Should have made 2 calls (first failed, second succeeded)
+            assert mock_get.call_count == 2
+            assert result == mock_success_response
+
+
+def test_opentext_client_does_not_retry_404_errors():
+    """Test that OpenTextClient.call() does not retry 404 errors."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import OpenTextClient
+    import requests
+
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        # Mock auth response for init
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        with patch("snowflake_document_agent.ingest_opentext.requests.get") as mock_get:
+            # Mock 404 error response
+            mock_404_response = Mock()
+            mock_404_response.status_code = 404
+            mock_404_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_404_response)
+            mock_get.return_value = mock_404_response
+
+            # Should raise HTTPError immediately without retries
+            from snowflake_document_agent.ingest_opentext import HttpMethod
+
+            with pytest.raises(requests.exceptions.HTTPError):
+                client.call(HttpMethod.GET, "opentext/cloud/v1/nodes/99999")
+
+            # Should have made only 1 call (no retries for 404)
+            assert mock_get.call_count == 1
+
+
+def test_opentext_client_does_not_retry_401_errors():
+    """Test that OpenTextClient.call() does not retry 401 auth errors."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import OpenTextClient, HttpMethod
+    import requests
+
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        # Mock auth response for init
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        with patch("snowflake_document_agent.ingest_opentext.requests.get") as mock_get:
+            # Mock 401 error response (auth failure)
+            mock_401_response = Mock()
+            mock_401_response.status_code = 401
+            mock_401_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_401_response)
+            mock_get.return_value = mock_401_response
+
+            # Should raise HTTPError immediately without retries
+            with pytest.raises(requests.exceptions.HTTPError):
+                client.call(HttpMethod.GET, "opentext/cloud/v1/nodes/12345")
+
+            # Should have made only 1 call (no retries for 401)
+            assert mock_get.call_count == 1
+
+
+def test_opentext_client_retries_auth_on_server_errors():
+    """Test that OpenTextClient.__init__() retries auth on server errors."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import OpenTextClient
+    import requests
+
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        # First auth call fails with 500, second succeeds
+        mock_error_response = Mock()
+        mock_error_response.status_code = 500
+        mock_error_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_error_response)
+
+        mock_success_response = Mock()
+        mock_success_response.status_code = 200
+        mock_success_response.json.return_value = {"access_token": "fake_token"}
+        mock_success_response.raise_for_status.return_value = None
+
+        mock_post.side_effect = [mock_error_response, mock_success_response]
+
+        # Should eventually succeed after retry
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        # Should have made 2 auth calls (first failed, second succeeded)
+        assert mock_post.call_count == 2
+        assert client.headers["authorization"] == "Bearer fake_token"
+
+
+def test_opentext_client_does_not_retry_auth_on_401_errors():
+    """Test that OpenTextClient.__init__() does not retry auth on 401 errors."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import OpenTextClient
+    import requests
+
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        # Mock 401 error response (bad credentials)
+        mock_401_response = Mock()
+        mock_401_response.status_code = 401
+        mock_401_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_401_response)
+        mock_post.return_value = mock_401_response
+
+        # Should raise HTTPError immediately without retries
+        with pytest.raises(requests.exceptions.HTTPError):
+            OpenTextClient(
+                client_id="bad_client",
+                client_secret="bad_secret",
+                api_prefix="https://api.example.com",
+                app_client_id="app_client",
+                app_client_secret="app_secret",
+            )
+
+        # Should have made only 1 auth call (no retries for 401)
+        assert mock_post.call_count == 1
