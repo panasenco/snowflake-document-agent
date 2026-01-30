@@ -130,7 +130,7 @@ class OpenTextDocumentInfo(DocumentInfoProtocol):
 
     modified_at_utc: datetime
     opentext_id: int
-    opentext_name: str
+    extension: str
     opentext_api_client: OpenTextClient
     metadata: str = ""
 
@@ -140,11 +140,10 @@ class OpenTextDocumentInfo(DocumentInfoProtocol):
         # Call OpenText API to get content
         response = self.opentext_api_client.call(HttpMethod.GET, f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
 
-        # Extract file extension from opentext_name
-        file_suffix = Path(self.opentext_name).suffix
-
         # Write content to temporary file with opentext_id prefix and correct extension
-        temp_file = tempfile.NamedTemporaryFile(delete=False, prefix=f"{self.opentext_id}_", suffix=file_suffix)
+        temp_file = tempfile.NamedTemporaryFile(
+            delete=False, prefix=f"{self.opentext_id}_", suffix=f".{self.extension}"
+        )
         temp_file.write(response.content)
         temp_file.close()
 
@@ -179,12 +178,16 @@ def get_opentext_documents(
             modify_date_str = node_data["modify_date"]
             modify_date = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
 
-            # Create source URI
-            source_uri = f"{prefix}://{name}"
+            # Get file extension from versions API (OpenText API quirk)
+            versions_response = client.call(HttpMethod.GET, f"opentext/cloud/v1/nodes/{node_id}/versions/0")
+            extension = versions_response.json()["data"]["file_type"].lower()
 
-            # Create OpenTextDocumentInfo object
+            # Create source URI with extension
+            source_uri = f"{prefix}://{name}.{extension}"
+
+            # Create OpenTextDocumentInfo object with extension
             doc_info = OpenTextDocumentInfo(
-                modified_at_utc=modify_date, opentext_id=node_id, opentext_name=name, opentext_api_client=client
+                modified_at_utc=modify_date, opentext_id=node_id, extension=extension, opentext_api_client=client
             )
 
             result[source_uri] = doc_info
@@ -213,14 +216,14 @@ def get_opentext_documents(
 
             # Update the result with shortcut name instead of original name
             for original_uri, doc_info in original_documents.items():
-                # Create new URI using shortcut name
-                shortcut_uri = f"{prefix}://{shortcut_name}"
+                # Create new URI using shortcut name with original extension
+                shortcut_uri = f"{prefix}://{shortcut_name}.{doc_info.extension}"
 
                 # Create new DocumentInfo with original document ID but shortcut name and date
                 shortcut_doc_info = OpenTextDocumentInfo(
                     modified_at_utc=modify_date,
                     opentext_id=doc_info.opentext_id,  # Keep original document ID for content access
-                    opentext_name=shortcut_name,  # Use shortcut name
+                    extension=doc_info.extension,  # Use original document's extension
                     opentext_api_client=client,
                 )
 
