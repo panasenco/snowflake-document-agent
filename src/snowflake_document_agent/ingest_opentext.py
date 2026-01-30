@@ -7,14 +7,34 @@ into the Snowflake Document Agent pipeline, with on-demand downloading capabilit
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 import logging
 from pathlib import Path
 import tempfile
 from typing import Any
 
 import requests
+from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from .common import DocumentInfoProtocol
+
+logger = logging.getLogger(__name__)
+
+
+class HttpMethod(Enum):
+    """Supported HTTP methods for OpenText API calls."""
+
+    GET = "GET"
+    POST = "POST"
+
+
+def is_retriable_requests_error(e: Exception) -> bool:
+    """Determine if a requests error should be retried."""
+    if not isinstance(e, requests.exceptions.HTTPError):
+        return False
+    if e.response.status_code in [401, 404]:
+        return False
+    return True
 
 
 class OpenTextClient:
@@ -27,15 +47,17 @@ class OpenTextClient:
         self.app_client_id = app_client_id
         self.app_client_secret = app_client_secret
 
-        # Authenticate and get access token
-        auth_url = f"{self.api_prefix}/opentext/cloud/v1/auth"
+        # Initialize headers as empty dict first
+        self.headers = {}
+
+        # Authenticate and get access token using call() with retry logic
         auth_data = {
             "grant_type": "client_credentials",
             "client_id": self.client_id,
             "client_secret": self.client_secret,
         }
 
-        auth_response = requests.post(auth_url, data=auth_data)
+        auth_response = self.call(HttpMethod.POST, "opentext/cloud/v1/auth", headers={}, data=auth_data)
         token_dict = auth_response.json()
         access_token = token_dict["access_token"]
 
@@ -45,16 +67,34 @@ class OpenTextClient:
             f"{self.app_client_id}": self.app_client_secret,  # App credentials as headers
         }
 
-    def call(self, method: str, path: str) -> Any:
-        """Make an authenticated API call to OpenText."""
+    @retry(
+        retry=retry_if_exception(is_retriable_requests_error),
+        wait=wait_random_exponential(multiplier=1, max=60),
+        stop=stop_after_attempt(3),
+        reraise=True,
+        before_sleep=before_sleep_log(logger, log_level=logging.INFO, exc_info=True),
+    )
+    def call(
+        self,
+        method: HttpMethod,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> Any:
+        """Make an API call to OpenText with optional custom headers and data."""
         api_url = f"{self.api_prefix}/{path}"
+        request_headers = headers if headers is not None else self.headers
 
-        if method.upper() == "GET":
-            return requests.get(api_url, headers=self.headers)
-        elif method.upper() == "POST":
-            return requests.post(api_url, headers=self.headers)
+        if method == HttpMethod.GET:
+            response = requests.get(api_url, headers=request_headers)
+        elif method == HttpMethod.POST:
+            response = requests.post(api_url, headers=request_headers, data=data)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
+
+        response.raise_for_status()
+        return response
 
 
 @dataclass
@@ -71,7 +111,7 @@ class OpenTextDocumentInfo(DocumentInfoProtocol):
     def local_path(self) -> Path:
         """Download document from OpenText on-demand and return local path."""
         # Call OpenText API to get content
-        response = self.opentext_api_client.call("GET", f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
+        response = self.opentext_api_client.call(HttpMethod.GET, f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
 
         # Extract file extension from opentext_name
         file_suffix = Path(self.opentext_name).suffix
@@ -101,7 +141,7 @@ def get_opentext_documents(
 
     for node_id in opentext_nodes:
         # Get node info from OpenText API
-        response = client.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
+        response = client.call(HttpMethod.GET, f"opentext/cloud/v1/nodes/{node_id}")
         node_data = response.json()["data"]
 
         node_type = node_data["type_name"]
@@ -124,7 +164,7 @@ def get_opentext_documents(
 
         elif node_type == "Folder":
             # Handle folder - get children and process recursively
-            children_response = client.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
+            children_response = client.call(HttpMethod.GET, f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
             children_data = children_response.json()["results"]
 
             # Extract child IDs
