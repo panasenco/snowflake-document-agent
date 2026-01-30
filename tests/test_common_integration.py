@@ -321,3 +321,43 @@ def test_process_documents_prefix_isolation(snowflake_conn, test_schema, tmp_pat
             process_documents({}, prefix=prefix2, conn=snowflake_conn, config=test_config)
         except Exception:
             pass
+
+
+@pytest.mark.integration
+def test_parse_documents_fails_on_missing_files(snowflake_conn, test_schema, test_config):
+    """
+    Test that parse_documents() raises an exception when Cortex parsing fails
+    due to missing files in the stage, instead of silently inserting error messages.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    from snowflake_document_agent.common import create_temporary_updated_uris, parse_documents
+
+    with snowflake_conn.cursor() as cursor:
+        # 1. Setup - Create updated_uris table with references to non-existent files
+        create_temporary_updated_uris(snowflake_conn, config=test_config)
+
+        # Insert fake stage paths that don't actually exist in the @documents stage
+        cursor.execute(
+            "INSERT INTO updated_uris (source_uri, stage_path) VALUES "
+            "('test://missing_doc1.txt', 'missing_doc1.txt'), "
+            "('test://missing_doc2.pdf', 'missing_doc2.pdf')"
+        )
+
+        # 2. Verify the @documents stage is empty for these paths
+        cursor.execute("LIST @documents")
+        stage_files = [row[0] for row in cursor.fetchall()]
+        assert "missing_doc1.txt" not in str(stage_files), "Test setup error: file exists in stage"
+        assert "missing_doc2.pdf" not in str(stage_files), "Test setup error: file exists in stage"
+
+        # 3. Execute parse_documents - this should detect the parsing errors and raise an exception
+        with pytest.raises(RuntimeError) as exc_info:
+            parse_documents(cursor, prefix="test", insert=True)
+
+        # 4. Verify the exception message mentions the parsing failure
+        error_message = str(exc_info.value)
+        assert "parsing failed" in error_message.lower(), f"Expected parsing error message, got: {error_message}"
+        assert "2 documents" in error_message, f"Expected count of failed documents, got: {error_message}"
+
+    # No cleanup - leave test data for inspection
