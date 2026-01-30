@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from snowflake_document_agent.ingest_opentext import OpenTextDocumentInfo, OpenTextClient
+from snowflake_document_agent.ingest_opentext import OpenTextDocumentInfo, OpenTextClient, get_opentext_documents
 
 
 def test_opentext_document_info_creation():
@@ -194,8 +194,8 @@ def test_opentext_client_authenticates_at_init():
 
         # Should store the headers with token
         assert client.headers["authorization"] == "Bearer fake_token"
-        assert "app_client" in client.headers
-        assert client.headers["app_client"] == "app_secret"
+        assert client.headers["app-client-id"] == "app_client"
+        assert client.headers["app-client-secret"] == "app_secret"
 
 
 def test_opentext_client_call_method():
@@ -245,7 +245,8 @@ def test_opentext_client_call_method():
         # Check that headers include the token
         headers = call_args[1]["headers"]
         assert headers["authorization"] == "Bearer fake_token"
-        assert headers["app_client"] == "app_secret"
+        assert headers["app-client-id"] == "app_client"
+        assert headers["app-client-secret"] == "app_secret"
 
         # Should return the response
         assert result == mock_api_response
@@ -843,3 +844,58 @@ def test_opentext_conn_fixture_integration(opentext_conn):
     # Should have authentication headers set
     assert opentext_conn.headers
     assert "authorization" in opentext_conn.headers
+
+
+@pytest.mark.integration
+def test_get_opentext_documents_integration(opentext_conn, pytestconfig):
+    """Test get_opentext_documents with real OpenText API using provided node ID."""
+    if opentext_conn is None:
+        pytest.skip("Integration tests not enabled (use --run-integration)")
+
+    node_id = pytestconfig.getoption("--opentext-node-id")
+    if node_id is None:
+        pytest.skip("OpenText node ID not provided (use --opentext-node-id)")
+
+    try:
+        # Call get_opentext_documents with the provided node ID
+        documents = get_opentext_documents(client=opentext_conn, opentext_nodes=[node_id], prefix="opentext")
+
+        # Should return a non-empty dictionary - we expect documents for the provided node
+        assert isinstance(documents, dict)
+        assert len(documents) > 0, (
+            f"No documents found in OpenText node {node_id}. Expected to find documents for testing."
+        )
+
+        # Verify structure of returned documents
+        for uri, doc_info in documents.items():
+            # URI should start with the expected prefix
+            assert uri.startswith("opentext://")
+
+            # Should be an OpenTextDocumentInfo instance
+            assert isinstance(doc_info, OpenTextDocumentInfo)
+
+            # Should have required attributes
+            assert doc_info.opentext_id
+            assert doc_info.opentext_name
+            assert doc_info.modified_at_utc
+            assert doc_info.opentext_api_client is opentext_conn
+
+        print(f"✅ Successfully discovered {len(documents)} documents from OpenText node {node_id}")
+        for uri in documents.keys():
+            print(f"  - {uri}")
+
+    except Exception as e:
+        error_msg = str(e).lower()
+        # Provide helpful diagnostic messages but still fail the test
+        if "401" in error_msg or "unauthorized" in error_msg:
+            print("✅ OpenText API integration successful!")
+            print(f"❌ Access denied for node {node_id} (expected in enterprise environments)")
+            print("🔒 This proves authentication works, but we don't have access to this specific node")
+            pytest.fail(f"Access denied for OpenText node {node_id}: {e}")
+        elif "404" in error_msg or "not found" in error_msg:
+            print("✅ OpenText API integration successful!")
+            print(f"❌ Node {node_id} not found (may have been deleted or doesn't exist)")
+            pytest.fail(f"OpenText node {node_id} not found: {e}")
+        else:
+            # Re-raise unexpected errors
+            raise

@@ -14,6 +14,9 @@ def pytest_addoption(parser):
     parser.addoption(
         "--snowflake-connection-name", action="store", default=None, help="Snowflake connection name from config"
     )
+    parser.addoption(
+        "--opentext-node-id", action="store", type=int, default=None, help="OpenText node ID for integration tests"
+    )
 
 
 def pytest_configure(config):
