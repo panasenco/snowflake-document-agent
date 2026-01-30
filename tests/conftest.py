@@ -11,7 +11,9 @@ from snowflake_document_agent.ingest_opentext import OpenTextClient
 
 def pytest_addoption(parser):
     parser.addoption("--run-integration", action="store_true", default=False, help="run integration tests")
-    parser.addoption("--connection-name", action="store", default=None, help="Snowflake connection name from config")
+    parser.addoption(
+        "--snowflake-connection-name", action="store", default=None, help="Snowflake connection name from config"
+    )
 
 
 def pytest_configure(config):
@@ -31,14 +33,20 @@ def pytest_collection_modifyitems(config, items):
 def snowflake_conn(pytestconfig):
     """
     Establishes a connection to Snowflake.
-    Allows overriding the connection name via --connection-name.
+    Requires --snowflake-connection-name to be provided when --run-integration is used.
+    Skips gracefully if Snowflake connection name is not provided.
     """
     if not pytestconfig.getoption("--run-integration"):
         yield None
         return
-    conn_name = pytestconfig.getoption("--connection-name")
+
+    conn_name = pytestconfig.getoption("--snowflake-connection-name")
+    if not conn_name:
+        pytest.skip("Snowflake integration tests skipped: --snowflake-connection-name not provided")
+        return
+
     try:
-        conn = snowflake.connector.connect(**({"connection_name": conn_name} if conn_name else {}))
+        conn = snowflake.connector.connect(connection_name=conn_name)
         yield conn
         conn.close()
     except Exception as e:
@@ -96,6 +104,7 @@ def opentext_conn(pytestconfig):
     Creates an OpenText client for integration tests.
     Only available when --run-integration is set to true.
     Reads configuration from environment variables.
+    Skips gracefully if OpenText credentials are not available.
     """
     if not pytestconfig.getoption("--run-integration"):
         yield None
@@ -103,9 +112,14 @@ def opentext_conn(pytestconfig):
 
     try:
         # Create OpenText client using environment variables
-        # This assumes the client will be modified to support env vars as fallback
         client = OpenTextClient()
         yield client
+    except ValueError as e:
+        # Skip if OpenText credentials are missing
+        if "Missing required OpenText parameters" in str(e):
+            pytest.skip(f"OpenText integration tests skipped: {e}")
+        else:
+            pytest.fail(f"Failed to create OpenText client: {e}")
     except Exception as e:
         pytest.fail(f"Failed to create OpenText client: {e}")
 
