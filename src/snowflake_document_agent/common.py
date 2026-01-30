@@ -78,10 +78,12 @@ def stage_document(
 ) -> None:
     # Upload the document to Snowflake
     local_path_str = str(local_path.absolute()).replace("\\", "\\\\").replace("'", "\\'")
-    stage_path = source_uri.split("://", 1)[-1]
-    stage_parent = stage_path.rsplit("/", 1)[0].replace("'", "\\'") if "/" in stage_path else ""
+    source_path = source_uri.split("://", 1)[-1]
+    stage_parent = source_path.rsplit("/", 1)[0] if "/" in source_path else ""
+    stage_parent_sanitized = stage_parent.replace("'", "\\'")
+    stage_path = stage_parent + "/" + local_path.name if stage_parent else local_path.name
     cursor.execute(
-        f"put 'file://{local_path_str}' '@documents/{stage_parent}' auto_compress=false overwrite=true",
+        f"put 'file://{local_path_str}' '@documents/{stage_parent_sanitized}' auto_compress=false overwrite=true",
     )
     # Add to updated_uris
     cursor.execute("insert into updated_uris(source_uri, stage_path) values (:1, :2)", (source_uri, stage_path))
@@ -140,17 +142,18 @@ def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> No
 
     # After insertion, check for parsing errors
     cursor.execute("""
-        SELECT COUNT(*)
-        FROM parsed_documents
-        WHERE source_uri IN (SELECT source_uri FROM updated_uris)
-        AND parsed_content LIKE '{"error%'
+        select count(*)
+        from parsed_documents
+        where source_uri in (select source_uri from updated_uris)
+        and parsed_content like '{"error%'
     """)
 
     error_count = cursor.fetchone()[0]
 
     if error_count > 0:
+        cursor.execute("select * from updated_uris")
         raise RuntimeError(
-            f"Document parsing failed for {error_count} documents. Check parsed_documents table for details."
+            f"Document parsing failed for {error_count} documents. Contents of updated_uris: {cursor.fetchall()}"
         )
 
 

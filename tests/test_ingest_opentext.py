@@ -1235,3 +1235,79 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test
 
     print("🎉 Full OpenText -> Snowflake pipeline test completed successfully!")
     print(f"📈 Summary: {len(documents)} OpenText documents -> {metadata_count} DB metadata -> {chunk_count} DB chunks")
+
+
+def test_shortcut_uses_actual_document_id():
+    """Test that shortcuts in OpenText use the actual document ID, not the shortcut ID."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import get_opentext_documents, OpenTextClient
+
+    # Mock the client
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        # Mock the client.call method for shortcut scenario
+        def mock_call_side_effect(method, path):
+            mock_response = Mock()
+
+            if path == "opentext/cloud/v1/nodes/999":
+                # Shortcut node info
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 999,  # This is the shortcut ID
+                        "name": "My Shortcut Document.docx",
+                        "modify_date": "2024-01-20T14:00:00Z",
+                        "type_name": "Shortcut",
+                        "original_id": 777,  # This is the actual document ID
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/777":
+                # Actual document that the shortcut points to
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 777,  # This is the actual document ID
+                        "name": "Actual Document.docx",
+                        "modify_date": "2024-01-20T14:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/777/versions/0":
+                # Version info for actual document to get extension
+                mock_response.json.return_value = {"data": {"file_type": "docx"}}
+
+            return mock_response
+
+        client.call = Mock(side_effect=mock_call_side_effect)
+
+        # Process the shortcut
+        result = get_opentext_documents(client, opentext_nodes=[999], prefix="test")
+
+        # Should have one document with shortcut name but actual document ID
+        assert len(result) == 1
+
+        expected_uri = "test://My Shortcut Document.docx"
+        assert expected_uri in result
+
+        doc_info = result[expected_uri]
+
+        # The key test: should use actual document ID (777), not shortcut ID (999)
+        assert doc_info.opentext_id == 777, (
+            f"Expected shortcut to use actual document ID 777, but got {doc_info.opentext_id}"
+        )
+
+        # Should use actual document's extension
+        assert doc_info.extension == "docx"
+
+        # Should use shortcut's modification date (not original document's)
+        expected_date = datetime.fromisoformat("2024-01-20T14:00:00+00:00")
+        assert doc_info.modified_at_utc == expected_date
