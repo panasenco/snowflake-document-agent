@@ -12,7 +12,49 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+import requests
+
 from .common import DocumentInfoProtocol
+
+
+class OpenTextClient:
+    """Simple HTTP client for OpenText API with authentication."""
+
+    def __init__(self, client_id: str, client_secret: str, api_prefix: str, app_client_id: str, app_client_secret: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.api_prefix = api_prefix
+        self.app_client_id = app_client_id
+        self.app_client_secret = app_client_secret
+
+        # Authenticate and get access token
+        auth_url = f"{self.api_prefix}/opentext/cloud/v1/auth"
+        auth_data = {
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        }
+
+        auth_response = requests.post(auth_url, data=auth_data)
+        token_dict = auth_response.json()
+        access_token = token_dict["access_token"]
+
+        # Store headers for reuse
+        self.headers = {
+            "authorization": f"Bearer {access_token}",
+            f"{self.app_client_id}": self.app_client_secret,  # App credentials as headers
+        }
+
+    def call(self, method: str, path: str) -> Any:
+        """Make an authenticated API call to OpenText."""
+        api_url = f"{self.api_prefix}/{path}"
+
+        if method.upper() == "GET":
+            return requests.get(api_url, headers=self.headers)
+        elif method.upper() == "POST":
+            return requests.post(api_url, headers=self.headers)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
 
 
 @dataclass
@@ -22,7 +64,7 @@ class OpenTextDocumentInfo(DocumentInfoProtocol):
     modified_at_utc: datetime
     opentext_id: int
     opentext_name: str
-    opentext_api_client: Any
+    opentext_api_client: OpenTextClient
     metadata: str = ""
 
     @property
