@@ -1,14 +1,22 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
-from pathlib import Path
-from typing import Any
 import os
+from pathlib import Path
+from typing import Any, Protocol
 
 import snowflake.connector
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
 import yaml
+
+
+class DocumentInfoProtocol(Protocol):
+    """Protocol for document information objects."""
+
+    modified_at_utc: datetime
+    metadata: str
+    local_path: Path | None
 
 snowflake.connector.paramstyle = "numeric"
 
@@ -16,7 +24,7 @@ ALL_TABLES = ["document_metadata", "enhanced_metadata", "parsed_documents", "doc
 
 
 @dataclass
-class DocumentInfo:
+class DocumentInfo(DocumentInfoProtocol):
     modified_at_utc: datetime
     local_path: Path | None = None
     metadata: str = ""
