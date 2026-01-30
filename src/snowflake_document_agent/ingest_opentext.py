@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import logging
+import os
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -40,12 +41,37 @@ def is_retriable_requests_error(e: Exception) -> bool:
 class OpenTextClient:
     """Simple HTTP client for OpenText API with authentication."""
 
-    def __init__(self, client_id: str, client_secret: str, api_prefix: str, app_client_id: str, app_client_secret: str):
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.api_prefix = api_prefix
-        self.app_client_id = app_client_id
-        self.app_client_secret = app_client_secret
+    def __init__(
+        self,
+        client_id: str = None,
+        client_secret: str = None,
+        api_prefix: str = None,
+        app_client_id: str = None,
+        app_client_secret: str = None,
+    ):
+        self.client_id = client_id or os.environ.get("OPENTEXT_CLIENT_ID")
+        self.client_secret = client_secret or os.environ.get("OPENTEXT_CLIENT_SECRET")
+        self.api_prefix = api_prefix or os.environ.get("OPENTEXT_API_PREFIX")
+        self.app_client_id = app_client_id or os.environ.get("OPENTEXT_APP_CLIENT_ID")
+        self.app_client_secret = app_client_secret or os.environ.get("OPENTEXT_APP_CLIENT_SECRET")
+
+        # Validate that all required parameters are available
+        required_params = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "api_prefix": self.api_prefix,
+            "app_client_id": self.app_client_id,
+            "app_client_secret": self.app_client_secret,
+        }
+
+        missing_params = [name for name, value in required_params.items() if not value]
+        if missing_params:
+            raise ValueError(
+                f"Missing required OpenText parameters: {', '.join(missing_params)}. "
+                f"Provide them as arguments or set environment variables: "
+                f"OPENTEXT_CLIENT_ID, OPENTEXT_CLIENT_SECRET, OPENTEXT_API_PREFIX, "
+                f"OPENTEXT_APP_CLIENT_ID, OPENTEXT_APP_CLIENT_SECRET"
+            )
 
         # Initialize headers as empty dict first
         self.headers = {}
