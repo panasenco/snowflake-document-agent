@@ -2,6 +2,8 @@
 
 import pytest
 from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import Mock
 
 from snowflake_document_agent.ingest_opentext import OpenTextDocumentInfo
 
@@ -26,3 +28,20 @@ def test_opentext_document_info_requires_opentext_fields():
     # Should fail without opentext_id
     with pytest.raises(TypeError):
         OpenTextDocumentInfo(modified_at_utc=modify_date, opentext_name="test_document.pdf", opentext_api_client=None)
+
+
+def test_local_path_property_returns_path():
+    """Test that local_path property returns a Path object."""
+    modify_date = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+    mock_client = Mock()
+
+    doc_info = OpenTextDocumentInfo(
+        modified_at_utc=modify_date,
+        opentext_id=12345,
+        opentext_name="test_document.pdf",
+        opentext_api_client=mock_client,
+    )
+
+    # This should return a Path object
+    result = doc_info.local_path
+    assert isinstance(result, Path)
