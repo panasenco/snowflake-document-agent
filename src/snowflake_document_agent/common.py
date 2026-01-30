@@ -111,6 +111,7 @@ def stage_document(
 def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> None:
     """
     Parses all documents from the stage and inserts into parsed_documents.
+    Raises RuntimeError if any document parsing fails.
     """
     select_stmt = """
         select
@@ -136,6 +137,21 @@ def parse_documents(cursor: SnowflakeCursor, *, prefix: str, insert: bool) -> No
             where parsed_documents.source_uri = updated_documents.source_uri
             """
     cursor.execute(query)
+
+    # After insertion, check for parsing errors
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM parsed_documents
+        WHERE source_uri IN (SELECT source_uri FROM updated_uris)
+        AND parsed_content LIKE '{"error%'
+    """)
+
+    error_count = cursor.fetchone()[0]
+
+    if error_count > 0:
+        raise RuntimeError(
+            f"Document parsing failed for {error_count} documents. Check parsed_documents table for details."
+        )
 
 
 def generate_metadata(cursor: SnowflakeCursor, *, prefix: str, config: dict[str, Any], insert: bool) -> None:
