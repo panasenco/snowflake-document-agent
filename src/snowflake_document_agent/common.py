@@ -18,6 +18,7 @@ class DocumentInfoProtocol(Protocol):
     metadata: str
     local_path: Path | None
 
+
 snowflake.connector.paramstyle = "numeric"
 
 ALL_TABLES = ["document_metadata", "enhanced_metadata", "parsed_documents", "document_chunks"]
