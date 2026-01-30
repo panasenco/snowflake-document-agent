@@ -83,6 +83,59 @@ def test_local_path_downloads_from_opentext():
     assert result.read_bytes() == b"fake PDF content"
 
 
+def test_local_path_uses_correct_file_extension():
+    """Test that local_path uses the file extension from opentext_name."""
+    modify_date = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+    mock_client = Mock()
+
+    # Mock HTTP client response
+    mock_response = Mock()
+    mock_response.content = b"fake document content"
+    mock_client.call.return_value = mock_response
+
+    doc_info = OpenTextDocumentInfo(
+        modified_at_utc=modify_date,
+        opentext_id=12345,
+        opentext_name="test_document.docx",  # Note: .docx, not .pdf
+        opentext_api_client=mock_client,
+    )
+
+    # Access local_path should create temp file with correct extension
+    result = doc_info.local_path
+
+    # Should return a path with the correct extension
+    assert isinstance(result, Path)
+    assert result.suffix == ".docx"
+    assert result.exists()
+
+
+def test_local_path_uses_opentext_id_prefix():
+    """Test that local_path creates temp file names starting with opentext_id."""
+    modify_date = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+    mock_client = Mock()
+
+    # Mock HTTP client response
+    mock_response = Mock()
+    mock_response.content = b"fake document content"
+    mock_client.call.return_value = mock_response
+
+    doc_info = OpenTextDocumentInfo(
+        modified_at_utc=modify_date,
+        opentext_id=98765,
+        opentext_name="important_doc.xlsx",
+        opentext_api_client=mock_client,
+    )
+
+    # Access local_path should create temp file with opentext_id prefix
+    result = doc_info.local_path
+
+    # Should return a path with filename starting with opentext_id
+    assert isinstance(result, Path)
+    assert result.name.startswith("98765_")
+    assert result.suffix == ".xlsx"
+    assert result.exists()
+
+
 def test_opentext_client_creation():
     """Test basic creation of OpenTextClient instance."""
     from unittest.mock import patch
