@@ -1,6 +1,9 @@
 # Ignore the real snowflake.yml config
 /snowflake.yml
 
+# Environment file
+/.env
+
 # Ignore the private development container configuration
 /.devcontainer/private
 
