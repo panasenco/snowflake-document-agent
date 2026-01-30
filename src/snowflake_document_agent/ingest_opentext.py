@@ -84,18 +84,57 @@ class OpenTextDocumentInfo(DocumentInfoProtocol):
         return Path(temp_file.name)
 
 
-def get_opentext_documents(opentext_nodes: list[int], prefix: str) -> dict[str, OpenTextDocumentInfo]:
+def get_opentext_documents(
+    client: OpenTextClient, *, opentext_nodes: list[int], prefix: str
+) -> dict[str, OpenTextDocumentInfo]:
     """Discover OpenText documents from specified node IDs.
 
     Args:
+        client: OpenTextClient for making API calls
         opentext_nodes: List of OpenText node IDs to process
         prefix: URI scheme prefix for the documents (e.g., 'opentext')
 
     Returns:
         Dictionary mapping source URIs to OpenTextDocumentInfo objects
     """
-    # TODO: Implement OpenText document discovery
-    raise NotImplementedError("OpenText document discovery not yet implemented")
+    result = {}
+
+    for node_id in opentext_nodes:
+        # Get node info from OpenText API
+        response = client.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
+        node_data = response.json()["data"]
+
+        node_type = node_data["type_name"]
+
+        if node_type == "Document":
+            # Handle individual document
+            name = node_data["name"]
+            modify_date_str = node_data["modify_date"]
+            modify_date = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
+
+            # Create source URI
+            source_uri = f"{prefix}://{name}"
+
+            # Create OpenTextDocumentInfo object
+            doc_info = OpenTextDocumentInfo(
+                modified_at_utc=modify_date, opentext_id=node_id, opentext_name=name, opentext_api_client=client
+            )
+
+            result[source_uri] = doc_info
+
+        elif node_type == "Folder":
+            # Handle folder - get children and process recursively
+            children_response = client.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
+            children_data = children_response.json()["results"]
+
+            # Extract child IDs
+            child_ids = [child["data"]["properties"]["id"] for child in children_data]
+
+            # Recursively process children
+            child_documents = get_opentext_documents(client, opentext_nodes=child_ids, prefix=prefix)
+            result.update(child_documents)
+
+    return result
 
 
 def main() -> None:

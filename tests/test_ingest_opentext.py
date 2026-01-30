@@ -243,3 +243,293 @@ def test_opentext_client_call_method():
 
         # Should return the response
         assert result == mock_api_response
+
+
+def test_get_opentext_documents_returns_document_info_dict():
+    """Test that get_opentext_documents returns dict mapping URIs to OpenTextDocumentInfo."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import get_opentext_documents, OpenTextClient, OpenTextDocumentInfo
+
+    # Mock the client
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        # Mock the client.call method to return node info
+        client.call = Mock()
+        mock_node_response = Mock()
+        mock_node_response.json.return_value = {
+            "data": {
+                "id": 12345,
+                "name": "test_document.pdf",
+                "modify_date": "2024-01-15T10:30:00Z",
+                "type_name": "Document",
+            }
+        }
+        client.call.return_value = mock_node_response
+
+        # Should return a dictionary mapping URIs to OpenTextDocumentInfo objects
+        result = get_opentext_documents(client, opentext_nodes=[12345], prefix="opentext")
+
+        # Should be a dict with one entry
+        assert isinstance(result, dict)
+        assert len(result) == 1
+
+        # Should have the expected URI key (like a file path after the scheme)
+        expected_uri = "opentext://test_document.pdf"
+        assert expected_uri in result
+
+        # Should contain an OpenTextDocumentInfo object
+        doc_info = result[expected_uri]
+        assert isinstance(doc_info, OpenTextDocumentInfo)
+        assert doc_info.opentext_id == 12345
+        assert doc_info.opentext_name == "test_document.pdf"
+
+
+def test_get_opentext_documents_handles_folder_with_documents():
+    """Test that get_opentext_documents recursively processes folders to find documents."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import get_opentext_documents, OpenTextClient, OpenTextDocumentInfo
+
+    # Mock the client
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        # Mock the client.call method to return different responses
+        def mock_call_side_effect(method, path):
+            mock_response = Mock()
+
+            if path == "opentext/cloud/v1/nodes/67890":
+                # Folder node info
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 67890,
+                        "name": "Documents Folder",
+                        "modify_date": "2024-01-10T09:00:00Z",
+                        "type_name": "Folder",
+                    }
+                }
+            elif path == "opentext/cloud/v2/nodes/67890/nodes?limit=1000":
+                # Children of the folder - two documents
+                mock_response.json.return_value = {
+                    "results": [
+                        {
+                            "data": {
+                                "properties": {
+                                    "id": 11111,
+                                    "name": "doc1.pdf",
+                                    "modify_date": "2024-01-11T10:00:00Z",
+                                    "type_name": "Document",
+                                }
+                            }
+                        },
+                        {
+                            "data": {
+                                "properties": {
+                                    "id": 22222,
+                                    "name": "doc2.docx",
+                                    "modify_date": "2024-01-12T11:00:00Z",
+                                    "type_name": "Document",
+                                }
+                            }
+                        },
+                    ]
+                }
+            elif path == "opentext/cloud/v1/nodes/11111":
+                # First document details
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 11111,
+                        "name": "doc1.pdf",
+                        "modify_date": "2024-01-11T10:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/22222":
+                # Second document details
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 22222,
+                        "name": "doc2.docx",
+                        "modify_date": "2024-01-12T11:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+
+            return mock_response
+
+        client.call = Mock(side_effect=mock_call_side_effect)
+
+        # Should return documents found within the folder
+        result = get_opentext_documents(client, opentext_nodes=[67890], prefix="opentext")
+
+        # Should be a dict with two entries (the documents within the folder)
+        assert isinstance(result, dict)
+        assert len(result) == 2
+
+        # Should have both documents
+        assert "opentext://doc1.pdf" in result
+        assert "opentext://doc2.docx" in result
+
+        # Verify the document info objects
+        doc1 = result["opentext://doc1.pdf"]
+        assert isinstance(doc1, OpenTextDocumentInfo)
+        assert doc1.opentext_id == 11111
+        assert doc1.opentext_name == "doc1.pdf"
+
+        doc2 = result["opentext://doc2.docx"]
+        assert isinstance(doc2, OpenTextDocumentInfo)
+        assert doc2.opentext_id == 22222
+        assert doc2.opentext_name == "doc2.docx"
+
+
+def test_get_opentext_documents_handles_nested_folders():
+    """Test that get_opentext_documents recursively processes nested folders."""
+    from unittest.mock import patch
+    from snowflake_document_agent.ingest_opentext import get_opentext_documents, OpenTextClient, OpenTextDocumentInfo
+
+    # Mock the client
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        client = OpenTextClient(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+        # Mock the client.call method for nested folder structure
+        def mock_call_side_effect(method, path):
+            mock_response = Mock()
+
+            if path == "opentext/cloud/v1/nodes/100":
+                # Root folder node info
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 100,
+                        "name": "Root Folder",
+                        "modify_date": "2024-01-01T08:00:00Z",
+                        "type_name": "Folder",
+                    }
+                }
+            elif path == "opentext/cloud/v2/nodes/100/nodes?limit=1000":
+                # Root folder contains a subfolder
+                mock_response.json.return_value = {
+                    "results": [
+                        {
+                            "data": {
+                                "properties": {
+                                    "id": 200,
+                                    "name": "Subfolder",
+                                    "modify_date": "2024-01-02T09:00:00Z",
+                                    "type_name": "Folder",
+                                }
+                            }
+                        }
+                    ]
+                }
+            elif path == "opentext/cloud/v1/nodes/200":
+                # Subfolder node info
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 200,
+                        "name": "Subfolder",
+                        "modify_date": "2024-01-02T09:00:00Z",
+                        "type_name": "Folder",
+                    }
+                }
+            elif path == "opentext/cloud/v2/nodes/200/nodes?limit=1000":
+                # Subfolder contains documents
+                mock_response.json.return_value = {
+                    "results": [
+                        {
+                            "data": {
+                                "properties": {
+                                    "id": 300,
+                                    "name": "nested_doc1.pdf",
+                                    "modify_date": "2024-01-03T10:00:00Z",
+                                    "type_name": "Document",
+                                }
+                            }
+                        },
+                        {
+                            "data": {
+                                "properties": {
+                                    "id": 400,
+                                    "name": "nested_doc2.xlsx",
+                                    "modify_date": "2024-01-04T11:00:00Z",
+                                    "type_name": "Document",
+                                }
+                            }
+                        },
+                    ]
+                }
+            elif path == "opentext/cloud/v1/nodes/300":
+                # First nested document
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 300,
+                        "name": "nested_doc1.pdf",
+                        "modify_date": "2024-01-03T10:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+            elif path == "opentext/cloud/v1/nodes/400":
+                # Second nested document
+                mock_response.json.return_value = {
+                    "data": {
+                        "id": 400,
+                        "name": "nested_doc2.xlsx",
+                        "modify_date": "2024-01-04T11:00:00Z",
+                        "type_name": "Document",
+                    }
+                }
+
+            return mock_response
+
+        client.call = Mock(side_effect=mock_call_side_effect)
+
+        # Should return documents found deep within nested folders
+        result = get_opentext_documents(client, opentext_nodes=[100], prefix="opentext")
+
+        # Should be a dict with two entries (the documents from the nested subfolder)
+        assert isinstance(result, dict)
+        assert len(result) == 2
+
+        # Should have both nested documents
+        assert "opentext://nested_doc1.pdf" in result
+        assert "opentext://nested_doc2.xlsx" in result
+
+        # Verify the document info objects have correct details
+        nested_doc1 = result["opentext://nested_doc1.pdf"]
+        assert isinstance(nested_doc1, OpenTextDocumentInfo)
+        assert nested_doc1.opentext_id == 300
+        assert nested_doc1.opentext_name == "nested_doc1.pdf"
+
+        nested_doc2 = result["opentext://nested_doc2.xlsx"]
+        assert isinstance(nested_doc2, OpenTextDocumentInfo)
+        assert nested_doc2.opentext_id == 400
+        assert nested_doc2.opentext_name == "nested_doc2.xlsx"
