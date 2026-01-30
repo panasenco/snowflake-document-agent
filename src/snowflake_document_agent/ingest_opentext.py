@@ -174,7 +174,6 @@ def get_opentext_documents(
 
         if node_type == "Document":
             # Handle individual document
-            name = node_data["name"]
             modify_date_str = node_data["modify_date"]
             modify_date = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
 
@@ -183,7 +182,7 @@ def get_opentext_documents(
             extension = versions_response.json()["data"]["file_type"].lower()
 
             # Create source URI with extension
-            source_uri = f"{prefix}://{name}.{extension}"
+            source_uri = f"{prefix}://{node_id}.{extension}"
 
             # Create OpenTextDocumentInfo object with extension
             doc_info = OpenTextDocumentInfo(
@@ -206,7 +205,6 @@ def get_opentext_documents(
 
         elif node_type == "Shortcut":
             # Handle shortcut - follow original_id but preserve shortcut name
-            shortcut_name = node_data["name"]
             original_id = node_data["original_id"]
             modify_date_str = node_data["modify_date"]
             modify_date = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
@@ -217,7 +215,7 @@ def get_opentext_documents(
             # Update the result with shortcut name instead of original name
             for original_uri, doc_info in original_documents.items():
                 # Create new URI using shortcut name with original extension
-                shortcut_uri = f"{prefix}://{shortcut_name}.{doc_info.extension}"
+                shortcut_uri = f"{prefix}://{doc_info.opentext_id}.{doc_info.extension}"
 
                 # Create new DocumentInfo with original document ID but shortcut name and date
                 shortcut_doc_info = OpenTextDocumentInfo(

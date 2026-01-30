@@ -361,3 +361,49 @@ def test_parse_documents_fails_on_missing_files(snowflake_conn, test_schema, tes
         assert "2 documents" in error_message, f"Expected count of failed documents, got: {error_message}"
 
     # No cleanup - leave test data for inspection
+
+
+@pytest.mark.integration
+def test_stage_document_uses_local_filename(snowflake_conn, test_schema, test_config, tmp_path):
+    """Test that stage_document uses the actual local filename rather than source_uri filename."""
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    from snowflake_document_agent.common import stage_document, create_temporary_updated_uris
+
+    # Create a temp file with a different name than what source_uri implies
+    local_file = tmp_path / "actual_temp_file_12345.pdf"
+    local_file.write_text("Test content for stage filename test")
+
+    # Source URI suggests a different filename
+    source_uri = "test://expected_document_name.pdf"
+
+    # Create temporary updated_uris table
+    create_temporary_updated_uris(snowflake_conn, config=test_config)
+
+    with snowflake_conn.cursor() as cursor:
+        # Stage the document
+        stage_document(
+            cursor=cursor,
+            source_uri=source_uri,
+            local_path=local_file,
+            modified_at_utc=datetime.now(timezone.utc),
+            insert=True,
+            metadata='{"test": "stage_filename"}',
+        )
+
+        # Check updated_uris table to see what stage_path was recorded
+        cursor.execute("SELECT stage_path FROM updated_uris WHERE source_uri = :1", (source_uri,))
+        result = cursor.fetchone()
+        assert result is not None, "No entry found in updated_uris"
+
+        recorded_stage_path = result[0]
+        print(f"Recorded stage_path: {recorded_stage_path}")
+        print(f"Local filename: {local_file.name}")
+
+        # BUG: stage_path should reference the actual local filename, not the source_uri filename
+        # This test documents the bug that needs to be fixed in common.py stage_document()
+        assert local_file.name in recorded_stage_path, (
+            f"stage_path should contain actual local filename '{local_file.name}', "
+            f"but recorded: '{recorded_stage_path}'"
+        )
