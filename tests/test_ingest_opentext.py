@@ -13,11 +13,11 @@ def test_opentext_document_info_creation():
     modify_date = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
 
     doc_info = OpenTextDocumentInfo(
-        modified_at_utc=modify_date, opentext_id=12345, opentext_name="test_document.pdf", opentext_api_client=None
+        modified_at_utc=modify_date, opentext_id=12345, extension="pdf", opentext_api_client=None
     )
 
     assert doc_info.opentext_id == 12345
-    assert doc_info.opentext_name == "test_document.pdf"
+    assert doc_info.extension == "pdf"
     assert doc_info.modified_at_utc == modify_date
 
 
@@ -27,7 +27,7 @@ def test_opentext_document_info_requires_opentext_fields():
 
     # Should fail without opentext_id
     with pytest.raises(TypeError):
-        OpenTextDocumentInfo(modified_at_utc=modify_date, opentext_name="test_document.pdf", opentext_api_client=None)
+        OpenTextDocumentInfo(modified_at_utc=modify_date, extension="pdf", opentext_api_client=None)
 
 
 def test_local_path_property_returns_path():
@@ -43,7 +43,7 @@ def test_local_path_property_returns_path():
     doc_info = OpenTextDocumentInfo(
         modified_at_utc=modify_date,
         opentext_id=12345,
-        opentext_name="test_document.pdf",
+        extension="pdf",
         opentext_api_client=mock_client,
     )
 
@@ -65,7 +65,7 @@ def test_local_path_downloads_from_opentext():
     doc_info = OpenTextDocumentInfo(
         modified_at_utc=modify_date,
         opentext_id=12345,
-        opentext_name="test_document.pdf",
+        extension="pdf",
         opentext_api_client=mock_client,
     )
 
@@ -98,7 +98,7 @@ def test_local_path_uses_correct_file_extension():
     doc_info = OpenTextDocumentInfo(
         modified_at_utc=modify_date,
         opentext_id=12345,
-        opentext_name="test_document.docx",  # Note: .docx, not .pdf
+        extension="docx",  # Note: docx, not pdf
         opentext_api_client=mock_client,
     )
 
@@ -124,7 +124,7 @@ def test_local_path_uses_opentext_id_prefix():
     doc_info = OpenTextDocumentInfo(
         modified_at_utc=modify_date,
         opentext_id=98765,
-        opentext_name="important_doc.xlsx",
+        extension="xlsx",
         opentext_api_client=mock_client,
     )
 
@@ -299,7 +299,7 @@ def test_get_opentext_documents_returns_document_info_dict():
         doc_info = result[expected_uri]
         assert isinstance(doc_info, OpenTextDocumentInfo)
         assert doc_info.opentext_id == 12345
-        assert doc_info.opentext_name == "test_document.pdf"
+        assert doc_info.extension == "pdf"
 
 
 def test_get_opentext_documents_handles_folder_with_documents():
@@ -401,12 +401,12 @@ def test_get_opentext_documents_handles_folder_with_documents():
         doc1 = result["opentext://doc1.pdf"]
         assert isinstance(doc1, OpenTextDocumentInfo)
         assert doc1.opentext_id == 11111
-        assert doc1.opentext_name == "doc1.pdf"
+        assert doc1.extension == "pdf"
 
         doc2 = result["opentext://doc2.docx"]
         assert isinstance(doc2, OpenTextDocumentInfo)
         assert doc2.opentext_id == 22222
-        assert doc2.opentext_name == "doc2.docx"
+        assert doc2.extension == "docx"
 
 
 def test_get_opentext_documents_handles_nested_folders():
@@ -534,12 +534,12 @@ def test_get_opentext_documents_handles_nested_folders():
         nested_doc1 = result["opentext://nested_doc1.pdf"]
         assert isinstance(nested_doc1, OpenTextDocumentInfo)
         assert nested_doc1.opentext_id == 300
-        assert nested_doc1.opentext_name == "nested_doc1.pdf"
+        assert nested_doc1.extension == "pdf"
 
         nested_doc2 = result["opentext://nested_doc2.xlsx"]
         assert isinstance(nested_doc2, OpenTextDocumentInfo)
         assert nested_doc2.opentext_id == 400
-        assert nested_doc2.opentext_name == "nested_doc2.xlsx"
+        assert nested_doc2.extension == "xlsx"
 
 
 def test_get_opentext_documents_handles_shortcut():
@@ -602,11 +602,11 @@ def test_get_opentext_documents_handles_shortcut():
         expected_uri = "opentext://shortcut_to_doc.pdf"
         assert expected_uri in result
 
-        # Document info should point to the actual document but preserve shortcut name
+        # Document info should point to the actual document with original extension
         doc_info = result[expected_uri]
         assert isinstance(doc_info, OpenTextDocumentInfo)
         assert doc_info.opentext_id == 600  # Actual document ID
-        assert doc_info.opentext_name == "shortcut_to_doc.pdf"  # Shortcut name preserved
+        assert doc_info.extension == "pdf"  # Original document extension
 
 
 def test_get_opentext_documents_handles_multiple_shortcuts():
@@ -694,13 +694,13 @@ def test_get_opentext_documents_handles_multiple_shortcuts():
         doc1 = result["opentext://link_to_report.docx"]
         assert isinstance(doc1, OpenTextDocumentInfo)
         assert doc1.opentext_id == 710  # Actual document ID
-        assert doc1.opentext_name == "link_to_report.docx"  # Shortcut name
+        assert doc1.extension == "docx"  # Original document extension
 
         # Verify second shortcut resolution
         doc2 = result["opentext://link_to_spreadsheet.xlsx"]
         assert isinstance(doc2, OpenTextDocumentInfo)
         assert doc2.opentext_id == 810  # Actual document ID
-        assert doc2.opentext_name == "link_to_spreadsheet.xlsx"  # Shortcut name
+        assert doc2.extension == "xlsx"  # Original document extension
 
 
 def test_opentext_client_retries_on_server_errors():
@@ -1008,6 +1008,76 @@ def test_opentext_conn_fixture_integration(opentext_conn):
 
 
 @pytest.mark.integration
+def test_opentext_document_content_download(opentext_conn, pytestconfig):
+    """Test downloading actual document content from OpenText using provided node ID."""
+    if opentext_conn is None:
+        pytest.skip("Integration tests not enabled (use --run-integration)")
+
+    node_id = pytestconfig.getoption("--opentext-node-id")
+    if node_id is None:
+        pytest.skip("OpenText node ID not provided (use --opentext-node-id)")
+
+    try:
+        # Call get_opentext_documents with the provided node ID
+        documents = get_opentext_documents(client=opentext_conn, opentext_nodes=[node_id], prefix="opentext")
+
+        # Should return a non-empty dictionary
+        assert isinstance(documents, dict)
+        assert len(documents) > 0, (
+            f"No documents found in OpenText node {node_id}. Expected to find documents for content testing."
+        )
+
+        print(f"✅ Discovered {len(documents)} documents from OpenText node {node_id}")
+
+        # Test downloading content from the first document
+        first_uri = next(iter(documents.keys()))
+        first_doc = documents[first_uri]
+
+        print(f"🔍 Testing document content download for: {first_uri}")
+        print(f"  - OpenText ID: {first_doc.opentext_id}")
+        print(f"  - File extension: {first_doc.extension}")
+
+        # This should trigger the download by accessing local_path property
+        local_path = first_doc.local_path
+
+        # Verify the file was downloaded and exists
+        assert local_path is not None, f"local_path should not be None for document {first_uri}"
+        assert local_path.exists(), f"Downloaded file should exist at {local_path}"
+        assert local_path.is_file(), f"Downloaded path should be a file: {local_path}"
+
+        # Check that the file has some content
+        file_size = local_path.stat().st_size
+        assert file_size > 0, f"Downloaded file should not be empty. Size: {file_size} bytes"
+
+        print("✅ Successfully downloaded document content:")
+        print(f"  - Local path: {local_path}")
+        print(f"  - File size: {file_size} bytes")
+        print(f"  - File extension: {local_path.suffix}")
+
+        # Verify the file extension matches the document extension
+        expected_extension = f".{first_doc.extension}"
+        assert local_path.suffix.lower() == expected_extension.lower(), (
+            f"File extension mismatch. Expected: {expected_extension}, Got: {local_path.suffix}"
+        )
+
+    except Exception as e:
+        error_msg = str(e).lower()
+        # Provide helpful diagnostic messages but still fail the test
+        if "401" in error_msg or "unauthorized" in error_msg:
+            print("✅ OpenText API integration successful!")
+            print(f"❌ Access denied for content in node {node_id} (expected in enterprise environments)")
+            print("🔒 This proves authentication works, but we don't have content access to this specific node")
+            pytest.fail(f"Access denied for OpenText node {node_id} content: {e}")
+        elif "404" in error_msg or "not found" in error_msg:
+            print("✅ OpenText API integration successful!")
+            print(f"❌ Document content not found for node {node_id} (may have been deleted or doesn't exist)")
+            pytest.fail(f"OpenText document content not found for node {node_id}: {e}")
+        else:
+            # Re-raise unexpected errors
+            raise
+
+
+@pytest.mark.integration
 def test_get_opentext_documents_integration(opentext_conn, pytestconfig):
     """Test get_opentext_documents with real OpenText API using provided node ID."""
     if opentext_conn is None:
@@ -1037,13 +1107,33 @@ def test_get_opentext_documents_integration(opentext_conn, pytestconfig):
 
             # Should have required attributes
             assert doc_info.opentext_id
-            assert doc_info.opentext_name
+            assert doc_info.extension
             assert doc_info.modified_at_utc
             assert doc_info.opentext_api_client is opentext_conn
 
         print(f"✅ Successfully discovered {len(documents)} documents from OpenText node {node_id}")
-        for uri in documents.keys():
+
+        # Check document names and extensions in one pass
+        missing_ext_docs = []
+
+        for uri, doc_info in documents.items():
             print(f"  - {uri}")
+            print(f"    OpenText ID: {doc_info.opentext_id}")
+            print(f"    File extension: {doc_info.extension}")
+
+            # Check if document has a valid file extension
+            if doc_info.extension and doc_info.extension.strip():
+                print(f"    ✅ Has extension: .{doc_info.extension}")
+            else:
+                print("    ❌ Missing file extension")
+                missing_ext_docs.append(f"Document ID: {doc_info.opentext_id}")
+
+        # Fail if any documents are missing extensions
+        if missing_ext_docs:
+            pytest.fail(
+                f"Documents missing file extensions: {', '.join(missing_ext_docs)}. "
+                f"All documents should have proper file extensions for processing."
+            )
 
     except Exception as e:
         error_msg = str(e).lower()
@@ -1063,7 +1153,7 @@ def test_get_opentext_documents_integration(opentext_conn, pytestconfig):
 
 
 @pytest.mark.integration
-def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test_schema, pytestconfig):
+def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test_schema, test_config, pytestconfig):
     """Test complete pipeline: OpenText document discovery -> Snowflake data loading.
 
     This test requires both OpenText and Snowflake to be configured:
@@ -1079,24 +1169,14 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test
     if node_id is None:
         pytest.skip("Full integration test requires OpenText node ID (use --opentext-node-id)")
 
-    from pathlib import Path
-    import yaml
     from snowflake_document_agent.common import process_documents
 
     print("🚀 Starting full OpenText -> Snowflake pipeline test")
     print(f"📁 OpenText Node ID: {node_id}")
     print(f"❄️  Snowflake Schema: {test_schema}")
 
-    # Step 1: Read Snowflake configuration
-    config_path = Path(__file__).parent.parent / "snowflake.example.yml"
-    with open(config_path, "r") as config_file:
-        full_config = yaml.safe_load(config_file)
-        snowflake_config = full_config["env"]
-
-    # Override with test schema
-    snowflake_config["schema"] = test_schema
-
-    print(f"📋 Loaded Snowflake config for schema: {snowflake_config['schema']}")
+    # Step 1: Use Snowflake configuration from fixture
+    print(f"📋 Loaded Snowflake config for schema: {test_config['schema']}")
 
     # Step 2: Discover OpenText documents
     print(f"🔍 Discovering documents from OpenText node {node_id}...")
@@ -1111,51 +1191,47 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test
     if len(documents) > 5:
         print(f"  ... and {len(documents) - 5} more documents")
 
-    # Step 3: Truncate tables (prepare for clean test)
-    print(f"🧹 Truncating tables in schema {test_schema}...")
-    with snowflake_conn.cursor() as cursor:
-        # Get list of tables in the test schema
-        cursor.execute(f"SHOW TABLES IN SCHEMA {test_schema}")
-        tables = cursor.fetchall()
-
-        for table_row in tables:
-            table_name = table_row[1]  # Table name is in second column
-            print(f"  Truncating {table_name}...")
-            cursor.execute(f"TRUNCATE TABLE {test_schema}.{table_name}")
-
-    print("✅ Tables truncated successfully")
-
-    # Step 4: Process documents into Snowflake
+    # Step 3: Process documents into Snowflake (tables already truncated by fixture)
     print("📤 Processing documents into Snowflake...")
 
     # Use the common process_documents function
-    results = process_documents(document_info_dict=documents, config=snowflake_config, conn=snowflake_conn)
+    process_documents(sources=documents, prefix="opentext", config=test_config, conn=snowflake_conn)
 
-    print(f"✅ Processed {len(results)} documents into Snowflake")
+    print(f"✅ Processed {len(documents)} documents into Snowflake")
 
-    # Step 5: Verify data was loaded
+    # Step 4: Verify data was loaded
     print("🔍 Verifying data was loaded into Snowflake...")
     with snowflake_conn.cursor() as cursor:
-        # Check the documents table for loaded records
-        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.documents")
-        doc_count = cursor.fetchone()[0]
+        # Check the actual document tables for loaded records
+        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.document_metadata")
+        metadata_count = cursor.fetchone()[0]
 
-        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.chunks")
+        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.parsed_documents")
+        parsed_count = cursor.fetchone()[0]
+
+        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.enhanced_metadata")
+        enhanced_count = cursor.fetchone()[0]
+
+        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.document_chunks")
         chunk_count = cursor.fetchone()[0]
 
-        print(f"📊 Documents table: {doc_count} records")
-        print(f"📊 Chunks table: {chunk_count} records")
+        print(f"📊 Document metadata: {metadata_count} records")
+        print(f"📊 Parsed documents: {parsed_count} records")
+        print(f"📊 Enhanced metadata: {enhanced_count} records")
+        print(f"📊 Document chunks: {chunk_count} records")
 
         # Verify we have data
-        assert doc_count > 0, "Expected documents to be loaded, but documents table is empty"
-        assert chunk_count > 0, "Expected chunks to be loaded, but chunks table is empty"
+        assert metadata_count > 0, "Expected document metadata to be loaded, but document_metadata table is empty"
+        assert parsed_count > 0, "Expected parsed documents to be loaded, but parsed_documents table is empty"
+        assert enhanced_count > 0, "Expected enhanced metadata to be loaded, but enhanced_metadata table is empty"
+        assert chunk_count > 0, "Expected chunks to be loaded, but document_chunks table is empty"
 
         # Show sample data
-        cursor.execute(f"SELECT source_uri, relative_path FROM {test_schema}.documents LIMIT 3")
+        cursor.execute(f"SELECT source_uri, LEFT(metadata, 50) FROM {test_schema}.document_metadata LIMIT 3")
         sample_docs = cursor.fetchall()
         print("📄 Sample loaded documents:")
         for doc in sample_docs:
-            print(f"  - {doc[0]} -> {doc[1]}")
+            print(f"  - {doc[0]} -> {doc[1]}...")
 
     print("🎉 Full OpenText -> Snowflake pipeline test completed successfully!")
-    print(f"📈 Summary: {len(documents)} OpenText documents -> {doc_count} DB documents -> {chunk_count} DB chunks")
+    print(f"📈 Summary: {len(documents)} OpenText documents -> {metadata_count} DB metadata -> {chunk_count} DB chunks")
