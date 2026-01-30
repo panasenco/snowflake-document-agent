@@ -1060,3 +1060,102 @@ def test_get_opentext_documents_integration(opentext_conn, pytestconfig):
         else:
             # Re-raise unexpected errors
             raise
+
+
+@pytest.mark.integration
+def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test_schema, pytestconfig):
+    """Test complete pipeline: OpenText document discovery -> Snowflake data loading.
+
+    This test requires both OpenText and Snowflake to be configured:
+    - OpenText: environment variables must be set
+    - Snowflake: --snowflake-connection-name must be provided
+    - Node ID: --opentext-node-id must be provided
+    """
+    # Skip if integration tests not enabled
+    if opentext_conn is None or snowflake_conn is None:
+        pytest.skip("Full integration test requires both OpenText and Snowflake (use --run-integration)")
+
+    node_id = pytestconfig.getoption("--opentext-node-id")
+    if node_id is None:
+        pytest.skip("Full integration test requires OpenText node ID (use --opentext-node-id)")
+
+    from pathlib import Path
+    import yaml
+    from snowflake_document_agent.common import process_documents
+
+    print("🚀 Starting full OpenText -> Snowflake pipeline test")
+    print(f"📁 OpenText Node ID: {node_id}")
+    print(f"❄️  Snowflake Schema: {test_schema}")
+
+    # Step 1: Read Snowflake configuration
+    config_path = Path(__file__).parent.parent / "snowflake.example.yml"
+    with open(config_path, "r") as config_file:
+        full_config = yaml.safe_load(config_file)
+        snowflake_config = full_config["env"]
+
+    # Override with test schema
+    snowflake_config["schema"] = test_schema
+
+    print(f"📋 Loaded Snowflake config for schema: {snowflake_config['schema']}")
+
+    # Step 2: Discover OpenText documents
+    print(f"🔍 Discovering documents from OpenText node {node_id}...")
+    documents = get_opentext_documents(client=opentext_conn, opentext_nodes=[node_id], prefix="opentext")
+
+    print(f"✅ Discovered {len(documents)} documents from OpenText")
+    assert len(documents) > 0, f"Expected to find documents in OpenText node {node_id} for full pipeline test"
+
+    # Log discovered documents
+    for i, uri in enumerate(list(documents.keys())[:5], 1):  # Show first 5
+        print(f"  {i}. {uri}")
+    if len(documents) > 5:
+        print(f"  ... and {len(documents) - 5} more documents")
+
+    # Step 3: Truncate tables (prepare for clean test)
+    print(f"🧹 Truncating tables in schema {test_schema}...")
+    with snowflake_conn.cursor() as cursor:
+        # Get list of tables in the test schema
+        cursor.execute(f"SHOW TABLES IN SCHEMA {test_schema}")
+        tables = cursor.fetchall()
+
+        for table_row in tables:
+            table_name = table_row[1]  # Table name is in second column
+            print(f"  Truncating {table_name}...")
+            cursor.execute(f"TRUNCATE TABLE {test_schema}.{table_name}")
+
+    print("✅ Tables truncated successfully")
+
+    # Step 4: Process documents into Snowflake
+    print("📤 Processing documents into Snowflake...")
+
+    # Use the common process_documents function
+    results = process_documents(document_info_dict=documents, config=snowflake_config, conn=snowflake_conn)
+
+    print(f"✅ Processed {len(results)} documents into Snowflake")
+
+    # Step 5: Verify data was loaded
+    print("🔍 Verifying data was loaded into Snowflake...")
+    with snowflake_conn.cursor() as cursor:
+        # Check the documents table for loaded records
+        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.documents")
+        doc_count = cursor.fetchone()[0]
+
+        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.chunks")
+        chunk_count = cursor.fetchone()[0]
+
+        print(f"📊 Documents table: {doc_count} records")
+        print(f"📊 Chunks table: {chunk_count} records")
+
+        # Verify we have data
+        assert doc_count > 0, "Expected documents to be loaded, but documents table is empty"
+        assert chunk_count > 0, "Expected chunks to be loaded, but chunks table is empty"
+
+        # Show sample data
+        cursor.execute(f"SELECT source_uri, relative_path FROM {test_schema}.documents LIMIT 3")
+        sample_docs = cursor.fetchall()
+        print("📄 Sample loaded documents:")
+        for doc in sample_docs:
+            print(f"  - {doc[0]} -> {doc[1]}")
+
+    print("🎉 Full OpenText -> Snowflake pipeline test completed successfully!")
+    print(f"📈 Summary: {len(documents)} OpenText documents -> {doc_count} DB documents -> {chunk_count} DB chunks")
