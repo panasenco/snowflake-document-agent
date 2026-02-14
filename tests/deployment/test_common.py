@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 
-from snowflake_document_agent.common import stage_document, update_document_metadata
+from snowflake_document_agent.common import stage_document, update_document_metadata, update_document_text
 
 
 @pytest.mark.deployment
@@ -83,3 +83,48 @@ def test_update_document_metadata_basic(snowflake_conn, test_schema, tmp_path):
         updated_result = cursor.fetchone()
         assert updated_result is not None, "No metadata found after update"
         assert updated_metadata in str(updated_result[1]), f"Expected metadata to contain '{updated_metadata}'"
+
+
+@pytest.mark.deployment
+def test_update_document_text_basic(snowflake_conn, test_schema, tmp_path):
+    """
+    Test that update_document_text properly inserts/updates text in the document_text table.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Setup
+        source_uri = "test://integration/text_test.txt"
+        original_text = "This is the original document text content."
+
+        # Execute - Insert new text
+        update_document_text(
+            cursor=cursor,
+            source_uri=source_uri,
+            text=original_text,
+            insert=True,
+        )
+
+        # Verify - Check that text was inserted into document_text table
+        cursor.execute("SELECT source_uri, document_text FROM document_text WHERE source_uri = :1", (source_uri,))
+        text_result = cursor.fetchone()
+        assert text_result is not None, "No text found in document_text table"
+        assert text_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{text_result[0]}'"
+        assert text_result[1] == original_text, f"Expected text content '{original_text}', got '{text_result[1]}'"
+
+        # Execute - Update existing text
+        updated_text = "This is the updated document text content."
+
+        update_document_text(
+            cursor=cursor,
+            source_uri=source_uri,
+            text=updated_text,
+            insert=False,
+        )
+
+        # Verify - Check that text was updated
+        cursor.execute("SELECT source_uri, document_text FROM document_text WHERE source_uri = :1", (source_uri,))
+        updated_result = cursor.fetchone()
+        assert updated_result is not None, "No text found after update"
+        assert updated_result[1] == updated_text, f"Expected updated text '{updated_text}', got '{updated_result[1]}'"

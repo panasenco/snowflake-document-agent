@@ -22,11 +22,11 @@ create table if not exists enhanced_metadata (
 grant select, insert, delete, update, truncate on table enhanced_metadata to role <% ctx.env.role %>;
 
 -- Underlying tables for content search
-create table if not exists parsed_documents (
+create table if not exists document_text (
     source_uri string,
-    parsed_content string
+    document_text string
 ) change_tracking = true;
-grant select, insert, delete, update, truncate on table parsed_documents to role <% ctx.env.role %>;
+grant select, insert, delete, update, truncate on table document_text to role <% ctx.env.role %>;
 
 create table if not exists document_chunks (
     source_uri string,

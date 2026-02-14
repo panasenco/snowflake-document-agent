@@ -1206,7 +1206,7 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test
         cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.document_metadata")
         metadata_count = cursor.fetchone()[0]
 
-        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.parsed_documents")
+        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.document_text")
         parsed_count = cursor.fetchone()[0]
 
         cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.enhanced_metadata")
@@ -1222,7 +1222,7 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test
 
         # Verify we have data
         assert metadata_count > 0, "Expected document metadata to be loaded, but document_metadata table is empty"
-        assert parsed_count > 0, "Expected parsed documents to be loaded, but parsed_documents table is empty"
+        assert parsed_count > 0, "Expected parsed documents to be loaded, but document_text table is empty"
         assert enhanced_count > 0, "Expected enhanced metadata to be loaded, but enhanced_metadata table is empty"
         assert chunk_count > 0, "Expected chunks to be loaded, but document_chunks table is empty"
 
