@@ -17,7 +17,7 @@ from typing import Any
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
-from .common_parallel import DocumentInfoProtocol
+from .common import DocumentInfoProtocol
 
 logger = logging.getLogger(__name__)
 

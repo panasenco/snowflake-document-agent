@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import logging
 from pathlib import Path
 
-from .common_parallel import DocumentInfo, process_documents
+from .common import DocumentInfo, process_documents
 
 
 def get_local_documents(root_path: Path, prefix: str) -> dict[str, DocumentInfo]:

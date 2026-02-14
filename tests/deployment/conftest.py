@@ -5,7 +5,7 @@ import pytest
 import snowflake.connector
 import yaml
 
-from snowflake_document_agent.common_parallel import ALL_TABLES, load_config
+from snowflake_document_agent.common import ALL_TABLES, load_config
 from snowflake_document_agent.ingest_opentext import OpenTextClient
 
 

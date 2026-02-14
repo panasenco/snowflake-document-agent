@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 
-from snowflake_document_agent.common_parallel import stage_document, update_document_metadata
+from snowflake_document_agent.common import stage_document, update_document_metadata
 
 
 @pytest.mark.deployment
