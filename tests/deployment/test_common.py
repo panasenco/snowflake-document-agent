@@ -44,7 +44,7 @@ def test_stage_document_basic(snowflake_conn, test_schema, tmp_path):
         assert len(stage_results) == 1, f"Expected 1 file in stage, found {len(stage_results)}"
 
         # Verify - Check that metadata was inserted into document_metadata table
-        cursor.execute("SELECT source_uri, metadata FROM document_metadata WHERE source_uri = %s", (source_uri,))
+        cursor.execute("SELECT source_uri, metadata FROM document_metadata WHERE source_uri = :1", (source_uri,))
         metadata_result = cursor.fetchone()
         assert metadata_result is not None, "No metadata found in document_metadata table"
         assert metadata_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{metadata_result[0]}'"
