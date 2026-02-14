@@ -69,23 +69,29 @@ def stage_document(
     *,
     source_uri: str,
     local_path: Path,
-    modified_at_utc: datetime,
-    insert: bool,
-    metadata: str = "",
 ) -> str:
     """Stages a document from a local filepath into the Snowflake stage @documents.
-    Writes the metadata into the table document_metadata.
     Returns the path to the document within the Snowflake stage.
     """
     local_path_str = str(local_path.absolute()).replace("\\", "\\\\").replace("'", "\\'")
     source_path = source_uri.split("://", 1)[-1]
     stage_parent = source_path.rsplit("/", 1)[0] if "/" in source_path else ""
     stage_parent_sanitized = stage_parent.replace("'", "\\'")
-    stage_path = stage_parent + "/" + local_path.name if stage_parent else local_path.name
     cursor.execute(
         f"put 'file://{local_path_str}' '@documents/{stage_parent_sanitized}' auto_compress=false overwrite=true",
     )
-    # Insert into document_metadata
+    return (stage_parent + "/" + local_path.name) if stage_parent else local_path.name
+
+
+def update_document_metadata(
+    cursor: SnowflakeCursor,
+    *,
+    source_uri: str,
+    modified_at_utc: datetime,
+    metadata: str = "",
+    insert: bool,
+) -> None:
+    """Add (if insert=True) or update (if insert=False) a document's metadata in the table document_metadata."""
     select_stmt = """
         select
             :1 as source_uri,
@@ -106,7 +112,16 @@ def stage_document(
             where document_metadata.source_uri = updated_metadata.source_uri
             """
     cursor.execute(query, (source_uri, modified_at_utc.isoformat(), metadata))
-    return stage_path
+
+
+def update_document_text(
+    cursor: SnowflakeCursor,
+    *,
+    source_uri: str,
+    text: str,
+    insert: bool,
+) -> None:
+    """Uploads a document's text directly to document_text for documents that don't need to be parsed."""
 
 
 def parse_document(
@@ -116,7 +131,7 @@ def parse_document(
     stage_path: str,
     insert: bool,
 ) -> None:
-    """Parses a staged document and inserts into parsed_documents.
+    """Parses a staged document and inserts into document_text.
     Raises RuntimeError if the parsing fails.
     """
 
