@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 
+import mammoth
 import snowflake.connector
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
@@ -120,6 +121,13 @@ def update_document_metadata(
             where document_metadata.source_uri = updated_metadata.source_uri
             """
     cursor.execute(query, (source_uri, modified_at_utc.isoformat(), metadata))
+
+
+def doc_to_html(local_path: Path) -> str:
+    """Gets the contents a Word document (.doc/.docx) in HTML format."""
+    with open(local_path, "rb") as docx_file:
+        result = mammoth.convert_to_html(docx_file)
+        return result.value
 
 
 def update_document_text(
