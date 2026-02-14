@@ -18,13 +18,26 @@ Then follow one of the below instructions:
 
 <details>
 
-<summary>Manual install</summary>
+<summary>Manual install using uv</summary>
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 
 ```sh
 uv sync
 ```
+
+</details>
+
+<summary>Manual install using pyenv</summary>
+
+If you're in an environment where `uv` doesn't work well, you can use `pyenv` instead:
+
+```sh
+pyenv virtualenv snowflake-document-agent
+~/.pyenv/versions/snowflake-document-agent/bin/pip install -e .
+```
+
+If you'd like to develop `snowflake-document-agent`, install the dev dependencies with `pip install -e .[dev]`.
 
 </details>
 
