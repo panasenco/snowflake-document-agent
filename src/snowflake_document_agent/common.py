@@ -12,6 +12,8 @@ import yaml
 snowflake.connector.paramstyle = "numeric"
 
 ALL_TABLES = ["document_metadata", "enhanced_metadata", "document_text", "document_chunks"]
+# See https://docs.snowflake.com/en/user-guide/snowflake-cortex/parse-document#input-requirements
+CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "txt"}
 
 
 class DocumentInfoProtocol(Protocol):
@@ -73,7 +75,12 @@ def stage_document(
 ) -> str:
     """Stages a document from a local filepath into the Snowflake stage @documents.
     Returns the path to the document within the Snowflake stage.
+    Raises ValueError if the file extension is not supported by Snowflake Cortex
     """
+    if local_path.suffix.removeprefix(".").lower() not in CORTEX_DOCUMENT_EXTENSIONS:
+        raise ValueError(
+            f"File {local_path} has an unsupported extension. Cortex allows one of: {CORTEX_DOCUMENT_EXTENSIONS}"
+        )
     local_path_str = str(local_path.absolute()).replace("\\", "\\\\").replace("'", "\\'")
     source_path = source_uri.split("://", 1)[-1]
     stage_parent = source_path.rsplit("/", 1)[0] if "/" in source_path else ""
