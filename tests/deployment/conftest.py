@@ -5,12 +5,12 @@ import pytest
 import snowflake.connector
 import yaml
 
-from snowflake_document_agent.common import create_temporary_updated_uris, ALL_TABLES, load_config
+from snowflake_document_agent.common_parallel import ALL_TABLES, load_config
 from snowflake_document_agent.ingest_opentext import OpenTextClient
 
 
 def pytest_addoption(parser):
-    parser.addoption("--run-integration", action="store_true", default=False, help="run integration tests")
+    parser.addoption("--run-deployment", action="store_true", default=False, help="run deployment tests")
     parser.addoption(
         "--snowflake-connection-name", action="store", default=None, help="Snowflake connection name from config"
     )
@@ -26,26 +26,26 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "integration: mark test as integration test")
+    config.addinivalue_line("markers", "deployment: mark test as deployment test")
 
 
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--run-integration"):
+    if config.getoption("--run-deployment"):
         return
-    skip_integration = pytest.mark.skip(reason="need --run-integration option to run")
+    skip_deployment = pytest.mark.skip(reason="need --run-deployment option to run")
     for item in items:
-        if "integration" in item.keywords:
-            item.add_marker(skip_integration)
+        if "deployment" in item.keywords:
+            item.add_marker(skip_deployment)
 
 
 @pytest.fixture(scope="session")
 def snowflake_conn(pytestconfig):
     """
     Establishes a connection to Snowflake.
-    Requires --snowflake-connection-name to be provided when --run-integration is used.
+    Requires --snowflake-connection-name to be provided when --run-deployment is used.
     Skips gracefully if Snowflake connection name is not provided.
     """
-    if not pytestconfig.getoption("--run-integration"):
+    if not pytestconfig.getoption("--run-deployment"):
         yield None
         return
 
@@ -177,11 +177,11 @@ def test_schema(temp_schema, existing_schema, pytestconfig):
 def opentext_conn(pytestconfig):
     """
     Creates an OpenText client for integration tests.
-    Only available when --run-integration is set to true.
+    Only available when --run-deployment is set to true.
     Reads configuration from environment variables.
     Skips gracefully if OpenText credentials are not available.
     """
-    if not pytestconfig.getoption("--run-integration"):
+    if not pytestconfig.getoption("--run-deployment"):
         yield None
         return
 
@@ -250,16 +250,3 @@ def test_config(example_config, real_config, pytestconfig):
         return real_config
     else:
         return example_config
-
-
-@pytest.fixture()
-def updated_uris(snowflake_conn, test_config):
-    """
-    Create the temporary table `updated_uris`
-    Teardown drops the table.
-    """
-    create_temporary_updated_uris(snowflake_conn, config=test_config)
-    table_identifier = f"{test_config['schema']}.updated_uris"
-    yield table_identifier
-    with snowflake_conn.cursor() as cursor:
-        cursor.execute(f"drop table {table_identifier}")
