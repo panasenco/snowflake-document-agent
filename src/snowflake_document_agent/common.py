@@ -11,7 +11,7 @@ import yaml
 
 snowflake.connector.paramstyle = "numeric"
 
-ALL_TABLES = ["document_metadata", "enhanced_metadata", "parsed_documents", "document_chunks"]
+ALL_TABLES = ["document_metadata", "enhanced_metadata", "document_text", "document_chunks"]
 
 
 class DocumentInfoProtocol(Protocol):
@@ -122,6 +122,24 @@ def update_document_text(
     insert: bool,
 ) -> None:
     """Uploads a document's text directly to document_text for documents that don't need to be parsed."""
+    select_stmt = """
+        select
+            :1 as source_uri,
+            :2 as document_text
+        """
+    if insert:
+        query = f"""
+            insert into document_text (source_uri, document_text)
+            {select_stmt}
+            """
+    else:
+        query = f"""
+            update document_text set
+                document_text = updated_text.document_text
+            from ({select_stmt}) as updated_text
+            where document_text.source_uri = updated_text.source_uri
+            """
+    cursor.execute(query, (source_uri, text))
 
 
 def parse_document(

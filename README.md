@@ -100,7 +100,7 @@ nix develop
     Only run each script if it makes sense to you and conforms to your organization's policies!
     Run each script with a command like:
     ```sh
-    snow sql -f scripts/snowflake-cli/setup_00_example.sql
+    snow sql -c [connection] -f scripts/snowflake-cli/setup_00_example.sql
     ```
 
 ## Running the pipeline
