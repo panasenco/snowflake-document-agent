@@ -4,9 +4,14 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 
+import snowflake.connector
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
 import yaml
+
+snowflake.connector.paramstyle = "numeric"
+
+ALL_TABLES = ["document_metadata", "enhanced_metadata", "parsed_documents", "document_chunks"]
 
 
 class DocumentInfoProtocol(Protocol):
@@ -22,10 +27,6 @@ class DocumentInfo(DocumentInfoProtocol):
     modified_at_utc: datetime
     local_path: Path | None = None
     metadata: str = ""
-
-
-# Constants
-ALL_TABLES = ["document_metadata", "enhanced_metadata", "parsed_documents", "document_chunks"]
 
 
 def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
@@ -76,6 +77,36 @@ def stage_document(
     Writes the metadata into the table document_metadata.
     Returns the path to the document within the Snowflake stage.
     """
+    local_path_str = str(local_path.absolute()).replace("\\", "\\\\").replace("'", "\\'")
+    source_path = source_uri.split("://", 1)[-1]
+    stage_parent = source_path.rsplit("/", 1)[0] if "/" in source_path else ""
+    stage_parent_sanitized = stage_parent.replace("'", "\\'")
+    stage_path = stage_parent + "/" + local_path.name if stage_parent else local_path.name
+    cursor.execute(
+        f"put 'file://{local_path_str}' '@documents/{stage_parent_sanitized}' auto_compress=false overwrite=true",
+    )
+    # Insert into document_metadata
+    select_stmt = """
+        select
+            :1 as source_uri,
+            :2::timestamp_ntz as modified_at_utc,
+            :3 as metadata
+        """
+    if insert:
+        query = f"""
+            insert into document_metadata (source_uri, modified_at_utc, metadata)
+            {select_stmt}
+            """
+    else:
+        query = f"""
+            update document_metadata set
+                modified_at_utc = updated_metadata.modified_at_utc,
+                metadata = updated_metadata.metadata
+            from ({select_stmt}) as updated_metadata
+            where document_metadata.source_uri = updated_metadata.source_uri
+            """
+    cursor.execute(query, (source_uri, modified_at_utc.isoformat(), metadata))
+    return stage_path
 
 
 def parse_document(
