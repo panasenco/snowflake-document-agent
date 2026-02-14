@@ -5,7 +5,7 @@ import pytest
 import snowflake.connector
 import yaml
 
-from snowflake_document_agent.common import ALL_TABLES, load_config
+from snowflake_document_agent.common import ALL_TABLES, load_config, clear_stage
 from snowflake_document_agent.ingest_opentext import OpenTextClient
 
 
@@ -146,14 +146,14 @@ def existing_schema(snowflake_conn, pytestconfig):
         cursor.execute(f"USE ROLE {real_config['role']}")
         print(f"🧹 Using existing schema {schema_name} with role: {real_config['role']}")
 
-    # Truncate the test tables to prepare for clean testing
+    # Truncate the test tables and clear stage to prepare for clean testing
     print(f"🧹 Truncating test tables in {schema_name}...")
     for table in ALL_TABLES:
-        try:
-            cursor.execute(f"TRUNCATE TABLE IF EXISTS {table}")
-            print(f"  Truncated {table}")
-        except Exception as e:
-            print(f"  Warning: Failed to truncate {table}: {e}")
+        cursor.execute(f"TRUNCATE TABLE IF EXISTS {table}")
+        print(f"  Truncated {table}")
+
+    clear_stage(cursor)
+    print("  Cleared @documents stage")
 
     yield schema_name
 
