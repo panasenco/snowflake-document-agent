@@ -273,3 +273,61 @@ def test_parse_document_error_handling(snowflake_conn, test_schema, tmp_path):
         assert source_uri_text in error_msg, f"Expected source URI in error message, got: {error_msg}"
 
         print("Error handling tests passed - invalid files properly rejected")
+
+
+@pytest.mark.deployment
+def test_stage_document_unsupported_file_types(snowflake_conn, test_schema, tmp_path):
+    """
+    Test that stage_document raises ValueError for unsupported file extensions.
+    Cortex only supports: PDF, PPTX, DOCX, JPEG, JPG, PNG, TIFF, TIF, HTML, TXT
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Test Case 1: Video file
+        video_file = tmp_path / "video.mp4"
+        video_file.write_bytes(b"fake video content")
+
+        with pytest.raises(ValueError) as exc_info:
+            stage_document(
+                cursor=cursor,
+                source_uri="test://unsupported/video.mp4",
+                local_path=video_file,
+            )
+
+        error_msg = str(exc_info.value)
+        assert "unsupported extension" in error_msg.lower(), f"Expected unsupported extension message, got: {error_msg}"
+        assert "video.mp4" in error_msg, f"Expected filename in error message, got: {error_msg}"
+
+        # Test Case 2: Archive file
+        zip_file = tmp_path / "archive.zip"
+        zip_file.write_bytes(b"fake zip content")
+
+        with pytest.raises(ValueError) as exc_info:
+            stage_document(
+                cursor=cursor,
+                source_uri="test://unsupported/archive.zip",
+                local_path=zip_file,
+            )
+
+        error_msg = str(exc_info.value)
+        assert "unsupported extension" in error_msg.lower(), f"Expected unsupported extension message, got: {error_msg}"
+        assert "archive.zip" in error_msg, f"Expected filename in error message, got: {error_msg}"
+
+        # Test Case 3: Executable file
+        exe_file = tmp_path / "program.exe"
+        exe_file.write_bytes(b"fake exe content")
+
+        with pytest.raises(ValueError) as exc_info:
+            stage_document(
+                cursor=cursor,
+                source_uri="test://unsupported/program.exe",
+                local_path=exe_file,
+            )
+
+        error_msg = str(exc_info.value)
+        assert "unsupported extension" in error_msg.lower(), f"Expected unsupported extension message, got: {error_msg}"
+        assert "program.exe" in error_msg, f"Expected filename in error message, got: {error_msg}"
+
+        print("File type validation tests passed - unsupported extensions properly rejected")
