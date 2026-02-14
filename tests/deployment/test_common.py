@@ -214,8 +214,62 @@ def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
             f"Parsed content too short, got {len(parsed_text)} chars: {parsed_text[:100]}..."
         )
 
-        # Check for common Cortex parsing error indicators
-        assert "error" not in parsed_text.lower(), f"Parsing appears to have failed with error: {parsed_text[:200]}..."
-        assert "could not" not in parsed_text.lower(), f"Parsing appears to have failed: {parsed_text[:200]}..."
-
         print(f"Successfully parsed {len(parsed_text)} characters from PDF")
+
+
+@pytest.mark.deployment
+def test_parse_document_error_handling(snowflake_conn, test_schema, tmp_path):
+    """
+    Test that parse_document properly handles invalid files with descriptive error messages.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Test Case 1: Empty file
+        empty_file = tmp_path / "empty.pdf"
+        empty_file.write_bytes(b"")
+
+        source_uri_empty = "test://error/empty.pdf"
+        stage_path_empty = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_empty,
+            local_path=empty_file,
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            parse_document(
+                cursor=cursor,
+                source_uri=source_uri_empty,
+                stage_path=stage_path_empty,
+                insert=True,
+            )
+
+        error_msg = str(exc_info.value)
+        assert "parsing failed" in error_msg.lower(), f"Expected parsing error message, got: {error_msg}"
+        assert source_uri_empty in error_msg, f"Expected source URI in error message, got: {error_msg}"
+
+        # Test Case 2: Plain text file (not a PDF)
+        text_file = tmp_path / "not_a_pdf.pdf"
+        text_file.write_text("This is just plain text, not a PDF document at all.")
+
+        source_uri_text = "test://error/not_a_pdf.pdf"
+        stage_path_text = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_text,
+            local_path=text_file,
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            parse_document(
+                cursor=cursor,
+                source_uri=source_uri_text,
+                stage_path=stage_path_text,
+                insert=True,
+            )
+
+        error_msg = str(exc_info.value)
+        assert "parsing failed" in error_msg.lower(), f"Expected parsing error message, got: {error_msg}"
+        assert source_uri_text in error_msg, f"Expected source URI in error message, got: {error_msg}"
+
+        print("Error handling tests passed - invalid files properly rejected")
