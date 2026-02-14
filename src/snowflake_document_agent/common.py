@@ -188,6 +188,10 @@ def parse_document(
     if parsed_text is None or len(parsed_text.strip()) == 0:
         raise RuntimeError(f"Document parsing failed - empty content for {source_uri}")
 
+    # Check if AI_PARSE_DOCUMENT returned an error message in JSON format
+    if parsed_text.strip().startswith('{"error'):
+        raise RuntimeError(f"Document parsing failed for {source_uri}: {parsed_text}")
+
 
 def generate_document_metadata(
     cursor: SnowflakeCursor,
