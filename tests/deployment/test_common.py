@@ -1,7 +1,46 @@
 import pytest
 from datetime import datetime, timezone
 
-from snowflake_document_agent.common import stage_document, update_document_metadata, update_document_text
+from snowflake_document_agent.common import (
+    stage_document,
+    update_document_metadata,
+    update_document_text,
+    parse_document,
+    clear_stage,
+)
+
+
+@pytest.mark.deployment
+def test_clear_stage_basic(snowflake_conn, test_schema, tmp_path):
+    """
+    Test that clear_stage properly removes all files from the @documents stage.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Setup - Create and stage some test files
+        test_file1 = tmp_path / "test1.txt"
+        test_file1.write_text("Test content 1")
+        test_file2 = tmp_path / "test2.txt"
+        test_file2.write_text("Test content 2")
+
+        # Stage both files
+        stage_document(cursor=cursor, source_uri="test://clear/test1.txt", local_path=test_file1)
+        stage_document(cursor=cursor, source_uri="test://clear/test2.txt", local_path=test_file2)
+
+        # Verify files exist in stage
+        cursor.execute("LIST @documents")
+        files_before = cursor.fetchall()
+        assert len(files_before) >= 2, f"Expected at least 2 files in stage, found {len(files_before)}"
+
+        # Execute - Clear the stage
+        clear_stage(cursor)
+
+        # Verify - Stage should be empty
+        cursor.execute("LIST @documents")
+        files_after = cursor.fetchall()
+        assert len(files_after) == 0, f"Expected empty stage after clear, found {len(files_after)} files: {files_after}"
 
 
 @pytest.mark.deployment
@@ -128,3 +167,55 @@ def test_update_document_text_basic(snowflake_conn, test_schema, tmp_path):
         updated_result = cursor.fetchone()
         assert updated_result is not None, "No text found after update"
         assert updated_result[1] == updated_text, f"Expected updated text '{updated_text}', got '{updated_result[1]}'"
+
+
+@pytest.mark.deployment
+def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
+    """
+    Test that parse_document properly parses a staged PDF using Cortex and stores the result.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Setup - Use fixture PDF
+        from pathlib import Path
+
+        fixture_pdf = Path(__file__).parent.parent / "fixtures" / "cuad-sponsorship.pdf"
+        assert fixture_pdf.exists(), f"Fixture file not found: {fixture_pdf}"
+
+        source_uri = "test://parse/cuad-sponsorship.pdf"
+
+        # Step 1 - Stage the document first (using our working stage_document function)
+        stage_path = stage_document(
+            cursor=cursor,
+            source_uri=source_uri,
+            local_path=fixture_pdf,
+        )
+
+        # Step 2 - Parse the staged document
+        parse_document(
+            cursor=cursor,
+            source_uri=source_uri,
+            stage_path=stage_path,
+            insert=True,
+        )
+
+        # Verify - Check that parsed content was stored in document_text table
+        cursor.execute("SELECT source_uri, document_text FROM document_text WHERE source_uri = :1", (source_uri,))
+        parse_result = cursor.fetchone()
+        assert parse_result is not None, "No parsed content found in document_text table"
+        assert parse_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{parse_result[0]}'"
+
+        # Verify content was actually parsed (not empty and no error messages)
+        parsed_text = parse_result[1]
+        assert parsed_text is not None and parsed_text.strip() != "", "Parsed content is empty"
+        assert len(parsed_text.strip()) > 50, (
+            f"Parsed content too short, got {len(parsed_text)} chars: {parsed_text[:100]}..."
+        )
+
+        # Check for common Cortex parsing error indicators
+        assert "error" not in parsed_text.lower(), f"Parsing appears to have failed with error: {parsed_text[:200]}..."
+        assert "could not" not in parsed_text.lower(), f"Parsing appears to have failed: {parsed_text[:200]}..."
+
+        print(f"Successfully parsed {len(parsed_text)} characters from PDF")

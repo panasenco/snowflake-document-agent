@@ -51,6 +51,7 @@ def create_cursor(conn: SnowflakeConnection, config: dict[str, Any], /) -> Snowf
 
 def clear_stage(cursor: SnowflakeCursor) -> None:
     """Clear the documents stage before ingesting new documents."""
+    cursor.execute("REMOVE @documents")
 
 
 def delete_documents(
@@ -152,6 +153,40 @@ def parse_document(
     """Parses a staged document and inserts into document_text.
     Raises RuntimeError if the parsing fails.
     """
+    select_stmt = """
+        select
+            :1 as source_uri,
+            AI_PARSE_DOCUMENT(
+                TO_FILE('@documents', :2),
+                {'mode': 'OCR'}
+            )::string as document_text
+        """
+
+    if insert:
+        query = f"""
+            insert into document_text (source_uri, document_text)
+            {select_stmt}
+        """
+    else:
+        query = f"""
+            update document_text set
+                document_text = updated_text.document_text
+            from ({select_stmt}) as updated_text
+            where document_text.source_uri = updated_text.source_uri
+            """
+
+    cursor.execute(query, (source_uri, stage_path))
+
+    # Verify the content was inserted/updated successfully
+    cursor.execute("SELECT document_text FROM document_text WHERE source_uri = :1", (source_uri,))
+    result = cursor.fetchone()
+
+    if result is None:
+        raise RuntimeError(f"Document parsing failed - no content found for {source_uri}")
+
+    parsed_text = result[0]
+    if parsed_text is None or len(parsed_text.strip()) == 0:
+        raise RuntimeError(f"Document parsing failed - empty content for {source_uri}")
 
 
 def generate_document_metadata(
