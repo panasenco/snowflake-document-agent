@@ -7,6 +7,7 @@ from snowflake_document_agent.common import (
     update_document_text,
     parse_document,
     generate_document_metadata,
+    chunk_document,
     clear_stage,
 )
 
@@ -377,3 +378,73 @@ def test_generate_document_metadata_basic(snowflake_conn, test_schema, test_conf
         )
 
         print("Successfully generated test metadata containing: 'Document Type: Test'")
+
+
+@pytest.mark.deployment
+def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path):
+    """
+    Test that chunk_document splits documents into exact expected chunks using small config values.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Setup - Create simple, predictable document text
+        source_uri = "test://integration/chunk_test.txt"
+        test_text = "abcdefghijklmnopqrstuvwxyz"  # 26 characters
+        test_metadata = "Test"
+
+        # Insert document text
+        update_document_text(
+            cursor=cursor,
+            source_uri=source_uri,
+            text=test_text,
+            insert=True,
+        )
+
+        # Insert enhanced metadata (required by chunk_document)
+        cursor.execute(
+            "INSERT INTO enhanced_metadata (source_uri, enhanced_metadata) VALUES (:1, :2)", (source_uri, test_metadata)
+        )
+
+        # Setup config with very small chunking parameters for precise testing
+        config_with_small_chunks = test_config.copy()
+        config_with_small_chunks["chunk_size"] = 10  # Very small chunks
+        config_with_small_chunks["chunk_overlap"] = 3  # Small overlap
+
+        # Execute - Chunk the document
+        chunk_document(cursor=cursor, source_uri=source_uri, config=config_with_small_chunks, insert=True)
+
+        # Verify - Check exact chunks were created
+        cursor.execute(
+            "SELECT contextualized_chunk FROM document_chunks WHERE source_uri = :1 ORDER BY contextualized_chunk",
+            (source_uri,),
+        )
+        chunk_results = cursor.fetchall()
+
+        # Extract just the document chunk parts (after metadata)
+        document_chunks = []
+        for chunk_result in chunk_results:
+            full_chunk = chunk_result[0]
+            # Find the document chunk part after the metadata
+            chunk_start = full_chunk.find("Document chunk:\n") + len("Document chunk:\n")
+            document_chunk = full_chunk[chunk_start:] if chunk_start > len("Document chunk:\n") - 1 else full_chunk
+            document_chunks.append(document_chunk.strip())
+
+        # With chunk_size=10 and chunk_overlap=3, Snowflake's split_text_recursive_character returns:
+        # Chunk 1: "abcdefghij" (chars 0-9)
+        # Chunk 2: "hijklmnopq" (chars 7-16, 3-char overlap)
+        # Chunk 3: "opqrstuvwx" (chars 15-24, 3-char overlap)
+        # Chunk 4: "vwxyz" (remaining chars 22-25)
+        expected_chunks = ["abcdefghij", "hijklmnopq", "opqrstuvwx", "vwxyz"]
+
+        assert len(document_chunks) == len(expected_chunks), (
+            f"Expected {len(expected_chunks)} chunks, got {len(document_chunks)}: {document_chunks}"
+        )
+
+        for i, expected in enumerate(expected_chunks):
+            assert expected in document_chunks[i], (
+                f"Expected chunk {i} to contain '{expected}', got '{document_chunks[i]}'"
+            )
+
+        print(f"Successfully created {len(document_chunks)} precise chunks: {document_chunks}")
