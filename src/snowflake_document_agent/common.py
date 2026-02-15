@@ -231,6 +231,33 @@ def generate_document_metadata(
     insert: bool,
 ) -> None:
     """Generates synthetic metadata for a parsed document."""
+    select_stmt = f"""
+        select
+            :1 as source_uri,
+            snowflake.cortex.complete(
+                '{config["metadata_model"]}',
+                '{config["metadata_prompt"].replace("'", "''").replace(chr(10), chr(92) + "n")}'
+                || chr(10) || chr(10) || 'Doc starts here:' || chr(10)
+                || substr(document_text, 1, {config["metadata_first_chars"]})
+                || chr(10) || 'Doc ends here' || chr(10) || chr(10)
+            ) as enhanced_metadata
+        from document_text
+        where source_uri = :1
+        """
+
+    if insert:
+        query = f"""
+            insert into enhanced_metadata (source_uri, enhanced_metadata)
+            {select_stmt}
+        """
+    else:
+        query = f"""
+            update enhanced_metadata set
+                enhanced_metadata = updated_metadata.enhanced_metadata
+            from ({select_stmt}) as updated_metadata
+            where enhanced_metadata.source_uri = updated_metadata.source_uri
+        """
+    cursor.execute(query, (source_uri,))
 
 
 def chunk_document(
