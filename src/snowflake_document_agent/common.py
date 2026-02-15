@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import mammoth
+import pandas as pd
 import snowflake.connector
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
@@ -123,11 +124,25 @@ def update_document_metadata(
     cursor.execute(query, (source_uri, modified_at_utc.isoformat(), metadata))
 
 
-def doc_to_html(local_path: Path) -> str:
+def word_doc_to_html(local_path: Path) -> str:
     """Gets the contents a Word document (.doc/.docx) in HTML format."""
     with open(local_path, "rb") as docx_file:
         result = mammoth.convert_to_html(docx_file)
         return result.value
+
+
+def excel_to_html(local_path: Path) -> str:
+    """Gets the contents an Excel document (.xls/.xlsx) in HTML format."""
+    # Read all worksheets
+    all_sheets = pd.read_excel(local_path, sheet_name=None)
+
+    html_content = ""
+    for sheet_name, df in all_sheets.items():
+        # Convert each sheet to HTML table
+        sheet_html = df.to_html(table_id=f"sheet_{sheet_name}", index=False)
+        html_content += sheet_html + "\n"
+
+    return html_content
 
 
 def update_document_text(
