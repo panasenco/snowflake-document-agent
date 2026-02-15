@@ -232,7 +232,7 @@ def real_config(existing_schema):
         yield None
         return
 
-    with open(Path(__file__).parent.parent / "snowflake.yml", "r") as f:
+    with open(Path(__file__).parent.parent.parent / "snowflake.yml", "r") as f:
         config = yaml.safe_load(f)["env"]
 
     # Override the schema with existing schema name (should be the same, but just to be sure)

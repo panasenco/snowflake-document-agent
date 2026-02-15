@@ -6,6 +6,7 @@ from snowflake_document_agent.common import (
     update_document_metadata,
     update_document_text,
     parse_document,
+    generate_document_metadata,
     clear_stage,
 )
 
@@ -331,3 +332,48 @@ def test_stage_document_unsupported_file_types(snowflake_conn, test_schema, tmp_
         assert "program.exe" in error_msg, f"Expected filename in error message, got: {error_msg}"
 
         print("File type validation tests passed - unsupported extensions properly rejected")
+
+
+@pytest.mark.deployment
+def test_generate_document_metadata_basic(snowflake_conn, test_schema, test_config, tmp_path):
+    """
+    Test that generate_document_metadata uses config metadata_prompt to generate metadata.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Setup - First create document text to generate metadata from
+        source_uri = "test://integration/metadata_generation_test.txt"
+        test_text = "This is a test document for metadata generation."
+
+        # Insert document text
+        update_document_text(
+            cursor=cursor,
+            source_uri=source_uri,
+            text=test_text,
+            insert=True,
+        )
+
+        # Setup config with overridden test metadata prompt
+        config_with_test_prompt = test_config.copy()
+        config_with_test_prompt["metadata_prompt"] = "This is a test. Always return exactly: Document Type: Test"
+
+        # Execute - Generate metadata with test config
+        generate_document_metadata(cursor=cursor, source_uri=source_uri, config=config_with_test_prompt, insert=True)
+
+        # Verify - Check that metadata was inserted into enhanced_metadata table
+        cursor.execute(
+            "SELECT source_uri, enhanced_metadata FROM enhanced_metadata WHERE source_uri = :1", (source_uri,)
+        )
+        metadata_result = cursor.fetchone()
+        assert metadata_result is not None, "No enhanced metadata found in enhanced_metadata table"
+        assert metadata_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{metadata_result[0]}'"
+
+        # Verify the generated metadata content contains our test string
+        generated_metadata = metadata_result[1]
+        assert "Document Type: Test" in generated_metadata, (
+            f"Expected 'Document Type: Test' in metadata, got '{generated_metadata}'"
+        )
+
+        print("Successfully generated test metadata containing: 'Document Type: Test'")
