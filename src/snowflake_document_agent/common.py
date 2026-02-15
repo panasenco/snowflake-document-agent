@@ -268,6 +268,37 @@ def chunk_document(
     insert: bool,
 ) -> None:
     """Splits documents into overlapping chunks for easier search."""
+    select_stmt = f"""
+        select
+            :1 as source_uri,
+            enhanced_metadata.enhanced_metadata
+            || chr(10) || chr(10) || 'Document chunk:' || chr(10)
+            || chunks.value as contextualized_chunk
+        from document_text
+        join enhanced_metadata
+            on document_text.source_uri = enhanced_metadata.source_uri,
+        lateral flatten( input => snowflake.cortex.split_text_recursive_character(
+            document_text.document_text,
+            'none',
+            {config["chunk_size"]},
+            {config["chunk_overlap"]}
+        )) as chunks
+        where document_text.source_uri = :1
+        """
+
+    if insert:
+        query = f"""
+            insert into document_chunks (source_uri, contextualized_chunk)
+            {select_stmt}
+            """
+    else:
+        query = f"""
+            update document_chunks set
+                contextualized_chunk = updated_chunks.contextualized_chunk
+            from ({select_stmt}) as updated_chunks
+            where document_chunks.source_uri = updated_chunks.source_uri
+            """
+    cursor.execute(query, (source_uri,))
 
 
 def process_document(
