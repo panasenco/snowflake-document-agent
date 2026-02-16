@@ -1,10 +1,9 @@
-from dataclasses import dataclass
 from datetime import datetime
 from logging import Logger, getLogger
 from concurrent.futures import as_completed, ThreadPoolExecutor
 import os
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import mammoth
 import pandas as pd
@@ -20,21 +19,6 @@ ALL_TABLES = ["document_metadata", "enhanced_metadata", "document_text", "docume
 CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "txt"}
 
 
-class DocumentInfoProtocol(Protocol):
-    """Protocol for document information objects."""
-
-    modified_at_utc: datetime
-    metadata: str
-    local_path: Path | None
-
-
-@dataclass
-class DocumentInfo(DocumentInfoProtocol):
-    modified_at_utc: datetime
-    local_path: Path | None = None
-    metadata: str = ""
-
-
 def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
     """Load configuration from YAML file."""
     if not os.path.exists(config_path):
@@ -46,9 +30,9 @@ def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
     return config.get("env", {})
 
 
-def create_cursor(conn: SnowflakeConnection, config: dict[str, Any], /) -> SnowflakeCursor:
+def create_cursor(connection: SnowflakeConnection, config: dict[str, Any], /) -> SnowflakeCursor:
     """Create a Snowflake cursor with the configured context set."""
-    cursor = conn.cursor()
+    cursor = connection.cursor()
     for attribute in ["role", "warehouse", "database", "schema"]:
         if attribute in config:
             cursor.execute(f"use {attribute} {config[attribute]}")
@@ -61,7 +45,7 @@ def clear_stage(cursor: SnowflakeCursor) -> None:
 
 
 def delete_documents(
-    conn: SnowflakeConnection,
+    connection: SnowflakeConnection,
     *,
     deleted_uris: set[str],
     config: dict[str, Any],
@@ -238,7 +222,7 @@ def generate_document_metadata(
             :1 as source_uri,
             snowflake.cortex.complete(
                 '{config["metadata_model"]}',
-                || '{config["metadata_prompt"].replace("'", "''").replace(chr(10), chr(92) + "n")}'
+                '{config["metadata_prompt"].replace("'", "''").replace(chr(10), chr(92) + "n")}'
                 || chr(10) || chr(10) || 'Document URI: ' || :1
                 || chr(10) || 'Document starts here:' || chr(10)
                 || substr(document_text, 1, {config["metadata_first_chars"]})
@@ -307,37 +291,43 @@ def chunk_document(
 def process_document(
     connection: SnowflakeConnection,
     source_uri: str,
-    source_info: DocumentInfo,
+    local_path: Path,
+    modified_at_utc: datetime,
+    metadata: str,
     config: dict[str, Any],
     insert: bool,
 ) -> None:
     """Process a single document end-to-end."""
     with connection.cursor() as cursor:
-        document_type = source_info.local_path.suffix.removeprefix(".").lower()
+        document_type = local_path.suffix.removeprefix(".").lower()
         match document_type:
             case "html" | "txt":
                 # Upload the contents directly
-                update_document_text(
-                    cursor, source_uri=source_uri, text=source_info.local_path.read_text(), insert=insert
-                )
+                update_document_text(cursor, source_uri=source_uri, text=local_path.read_text(), insert=insert)
             case "xls" | "xlsx":
                 # Convert Excel to HTML
-                document_html = excel_to_html(source_info.local_path)
+                document_html = excel_to_html(local_path)
                 update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
             case "doc" | "docx":
                 # Convert Word to HTML
-                document_html = word_doc_to_html(source_info.local_path)
+                document_html = word_doc_to_html(local_path)
                 update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
             case _:
                 # Parse in Snowflake
-                stage_path = stage_document(cursor, source_uri=source_uri, local_path=source_info.local_path)
+                stage_path = stage_document(cursor, source_uri=source_uri, local_path=local_path)
                 parse_document(cursor, source_uri=source_uri, stage_path=stage_path, insert=insert)
+        # Store basic document metadata first
+        update_document_metadata(
+            cursor, source_uri=source_uri, modified_at_utc=modified_at_utc, metadata=metadata, insert=insert
+        )
+        # Next generate synthetic metadata
         generate_document_metadata(cursor, source_uri=source_uri, config=config, insert=insert)
+        # Split the document into chunks
         chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
 
 
 def process_documents(
-    sources: list[tuple[str, DocumentInfoProtocol, bool]],
+    sources: list[tuple[str, Path, datetime, str, bool]],
     *,
     connection: SnowflakeConnection,
     config: dict[str, Any] | None = None,
@@ -345,7 +335,7 @@ def process_documents(
     logger: Logger = getLogger(),
 ) -> None:
     """Process documents end-to-end in parallel.
-    Requires a list of (source_uri, DocumentInfo, insert) tuples.
+    Requires a list of (source_uri, local_path, modified_at_utc, metadata, insert) tuples.
     Accepts a SnowflakeConnection object.
     Uses multithreading to reuse the connection object.
     Without multithreading, restrictive corporate environments that only allow browser based auth would open an SSO
@@ -355,8 +345,17 @@ def process_documents(
     """
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(process_document, connection, source_uri, source_info, config, insert): source_uri
-            for (source_uri, source_info, insert) in sources
+            executor.submit(
+                process_document,
+                connection,
+                source_uri,
+                local_path,
+                modified_at_utc,
+                metadata,
+                config,
+                insert,
+            ): source_uri
+            for (source_uri, local_path, modified_at_utc, metadata, insert) in sources
         }
     for future in as_completed(futures):
         source_uri = futures[future]
@@ -364,3 +363,14 @@ def process_documents(
             future.result()
         except Exception as err:
             logger.error(f"Error processing {source_uri}: {type(err).__name__} - {err}")
+
+
+def get_snowflake_documents(
+    conn: snowflake.connector.SnowflakeConnection,
+    *,
+    prefix: str,
+    config: dict[str, Any],
+) -> dict[str, tuple[datetime, str]]:
+    """Get information about the documents currently in Snowflake.
+    Returns a dictionary with source_uri's as keys and (modified_at_utc, metadata) tuples as values.
+    """

@@ -6,16 +6,12 @@ import snowflake.connector
 import yaml
 
 from snowflake_document_agent.common import ALL_TABLES, load_config, clear_stage
-from snowflake_document_agent.ingest_opentext import OpenTextClient
 
 
 def pytest_addoption(parser):
     parser.addoption("--run-deployment", action="store_true", default=False, help="run deployment tests")
     parser.addoption(
         "--snowflake-connection-name", action="store", default=None, help="Snowflake connection name from config"
-    )
-    parser.addoption(
-        "--opentext-node-id", action="store", type=int, default=None, help="OpenText node ID for integration tests"
     )
     parser.addoption(
         "--danger-use-existing-schema",
@@ -171,32 +167,6 @@ def test_schema(temp_schema, existing_schema, pytestconfig):
         return existing_schema
     else:
         return temp_schema
-
-
-@pytest.fixture(scope="session")
-def opentext_conn(pytestconfig):
-    """
-    Creates an OpenText client for integration tests.
-    Only available when --run-deployment is set to true.
-    Reads configuration from environment variables.
-    Skips gracefully if OpenText credentials are not available.
-    """
-    if not pytestconfig.getoption("--run-deployment"):
-        yield None
-        return
-
-    try:
-        # Create OpenText client using environment variables
-        client = OpenTextClient()
-        yield client
-    except ValueError as e:
-        # Skip if OpenText credentials are missing
-        if "Missing required OpenText parameters" in str(e):
-            pytest.skip(f"OpenText integration tests skipped: {e}")
-        else:
-            pytest.fail(f"Failed to create OpenText client: {e}")
-    except Exception as e:
-        pytest.fail(f"Failed to create OpenText client: {e}")
 
 
 @pytest.fixture(scope="session")
