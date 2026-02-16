@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from logging import Logger, getLogger
-from multiprocessing import Pool
+from concurrent.futures import as_completed, ThreadPoolExecutor
 import os
 from pathlib import Path
 from typing import Any, Protocol
@@ -304,66 +304,62 @@ def chunk_document(
 
 
 def process_document(
-    connection_name: str,
+    connection: SnowflakeConnection,
     source_uri: str,
     source_info: DocumentInfo,
     config: dict[str, Any],
     insert: bool,
-) -> Exception | None:
-    """Process a single document end-to-end.
-    Returns None if successful, or the exception object of the error if unsuccessful.
-    """
-    try:
-        with snowflake.connector.connect(connection_name=connection_name).cursor() as cursor:
-            document_type = source_info.local_path.suffix.removeprefix(".").lower()
-            match document_type:
-                case "html" | "txt":
-                    # Upload the contents directly
-                    update_document_text(
-                        cursor, source_uri=source_uri, text=source_info.local_path.read_text(), insert=insert
-                    )
-                case "xls" | "xlsx":
-                    # Convert Excel to HTML
-                    document_html = excel_to_html(source_info.local_path)
-                    update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
-                case "doc" | "docx":
-                    # Convert Word to HTML
-                    document_html = word_doc_to_html(source_info.local_path)
-                    update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
-                case _:
-                    # Parse in Snowflake
-                    stage_path = stage_document(cursor, source_uri=source_uri, local_path=source_info.local_path)
-                    parse_document(cursor, source_uri=source_uri, stage_path=stage_path, insert=insert)
-            generate_document_metadata(cursor, source_uri=source_uri, config=config, insert=insert)
-            chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
-        return None
-    except Exception as err:
-        return err
+) -> None:
+    """Process a single document end-to-end."""
+    with connection.cursor() as cursor:
+        document_type = source_info.local_path.suffix.removeprefix(".").lower()
+        match document_type:
+            case "html" | "txt":
+                # Upload the contents directly
+                update_document_text(
+                    cursor, source_uri=source_uri, text=source_info.local_path.read_text(), insert=insert
+                )
+            case "xls" | "xlsx":
+                # Convert Excel to HTML
+                document_html = excel_to_html(source_info.local_path)
+                update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
+            case "doc" | "docx":
+                # Convert Word to HTML
+                document_html = word_doc_to_html(source_info.local_path)
+                update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
+            case _:
+                # Parse in Snowflake
+                stage_path = stage_document(cursor, source_uri=source_uri, local_path=source_info.local_path)
+                parse_document(cursor, source_uri=source_uri, stage_path=stage_path, insert=insert)
+        generate_document_metadata(cursor, source_uri=source_uri, config=config, insert=insert)
+        chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
 
 
 def process_documents(
     sources: list[tuple[str, DocumentInfoProtocol, bool]],
     *,
-    connection_name: str = "default",
+    connection: SnowflakeConnection,
     config: dict[str, Any] | None = None,
-    processes: int = 8,
+    max_workers: int = 8,
     logger: Logger = getLogger(),
 ) -> None:
     """Process documents end-to-end in parallel.
     Requires a list of (source_uri, DocumentInfo, insert) tuples.
-    Accepts a SnowflakeConnection object or Snowflake connection name (if string).
+    Accepts a SnowflakeConnection object.
+    Uses multithreading to reuse the connection object.
+    Without multithreading, restrictive corporate environments that only allow browser based auth would open an SSO
+    browser tab for each document processed.
     Displays a progress bar.
     Doesn't crash when a document fails to process, but displays detailed information about the error.
     """
-    with Pool(processes=processes) as pool:
-        results = pool.starmap(
-            process_document,
-            [
-                (connection_name, source_uri, source_info, config, insert)
-                for (source_uri, source_info, insert) in sources
-            ],
-        )
-    for i, result in enumerate(results):
-        if result is None:
-            continue
-        logger.error(f"Error processing {sources[i][0]}: {result}")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(process_document, connection, source_uri, source_info, config, insert): source_uri
+            for (source_uri, source_info, insert) in sources
+        }
+    for future in as_completed(futures):
+        source_uri = futures[future]
+    try:
+        future.result()
+    except Exception as err:
+        logger.error(f"Error processing {source_uri}: {err}")
