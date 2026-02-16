@@ -1,5 +1,6 @@
 import pytest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from snowflake_document_agent.common import (
@@ -183,9 +184,6 @@ def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
         pytest.skip("No Snowflake connection")
 
     with snowflake_conn.cursor() as cursor:
-        # Setup - Use fixture PDF
-        from pathlib import Path
-
         fixture_pdf = Path(__file__).parent.parent / "fixtures" / "cuad-sponsorship.pdf"
         assert fixture_pdf.exists(), f"Fixture file not found: {fixture_pdf}"
 
@@ -218,6 +216,7 @@ def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
         assert len(parsed_text.strip()) > 50, (
             f"Parsed content too short, got {len(parsed_text)} chars: {parsed_text[:100]}..."
         )
+        assert "undergo training" in parsed_text.lower(), "Expected 'undergo training' in cuad-sponsorship.pdf content"
 
         print(f"Successfully parsed {len(parsed_text)} characters from PDF")
 
@@ -454,56 +453,79 @@ def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path
 
 
 @pytest.mark.deployment
-@patch('snowflake_document_agent.common.snowflake.connector.connect')
-def test_process_document_basic(mock_connect, snowflake_conn, test_schema, test_config, tmp_path):
+@patch("snowflake_document_agent.common.snowflake.connector.connect")
+@pytest.mark.parametrize(
+    "document_type,file_fixture,expected_content",
+    [
+        ("txt", "test_document.txt", "This is a test document for end-to-end processing."),
+        ("html", "test_document.html", "<p>Test HTML document</p>"),
+        ("pdf", "cuad-sponsorship.pdf", "undergo training"),
+        ("docx", "mammoth-tables.docx", "Bottom right"),
+        ("xlsx", "multi-worksheet.xlsx", "reset table"),
+    ],
+)
+def test_process_document_multiple_types(
+    mock_connect, snowflake_conn, test_schema, test_config, tmp_path, document_type, file_fixture, expected_content
+):
     """
-    Test that process_document runs end-to-end processing for a simple text document.
+    Test that process_document handles multiple document types correctly.
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
 
-    # Mock snowflake.connector.connect to return our test connection
     mock_connect.return_value = snowflake_conn
 
-    # Setup - Create a simple test document
-    test_file = tmp_path / "test_document.txt"
-    test_file.write_text("This is a test document for end-to-end processing.")
+    # Setup document file
+    if document_type in ["txt", "html"]:
+        test_file = tmp_path / file_fixture
+        test_file.write_text(
+            "This is a test document for end-to-end processing."
+            if document_type == "txt"
+            else "<p>Test HTML document</p>"
+        )
+    else:
+        test_file = Path(__file__).parent.parent / "fixtures" / file_fixture
+        assert test_file.exists(), f"Fixture not found: {test_file}"
 
-    source_uri = "test://process/test_document.txt"
-    document_info = DocumentInfo(
-        modified_at_utc=datetime.now(timezone.utc),
-        local_path=test_file,
-        metadata='{"author": "test", "type": "text"}'
-    )
+    # Override metadata prompt to return predictable test metadata
+    config_with_test_prompt = test_config.copy()
+    config_with_test_prompt["metadata_prompt"] = f"Always return exactly: Document Type: {document_type}"
 
-    # Execute - Process the document
     process_document(
         connection_name="test_connection_name",
-        source_uri=source_uri,
-        source_info=document_info,
+        source_uri=f"test://process/{file_fixture}",
+        source_info=DocumentInfo(
+            modified_at_utc=datetime.now(timezone.utc), local_path=test_file, metadata=f'{{"type": "{document_type}"}}'
+        ),
         prefix="test://process/",
-        config=test_config,
+        config=config_with_test_prompt,
         insert=True,
     )
 
-    # Verify - Check that snowflake.connector.connect was called with our connection name
     mock_connect.assert_called_once_with(connection_name="test_connection_name")
 
     with snowflake_conn.cursor() as cursor:
-        # Verify document_text was inserted
-        cursor.execute("SELECT document_text FROM document_text WHERE source_uri = :1", (source_uri,))
+        # Verify document_text content based on type
+        cursor.execute(
+            "SELECT document_text FROM document_text WHERE source_uri = :1", (f"test://process/{file_fixture}",)
+        )
         text_result = cursor.fetchone()
         assert text_result is not None, "Document text should be inserted"
-        assert "This is a test document for end-to-end processing." in text_result[0]
 
-        # Verify enhanced_metadata was generated
-        cursor.execute("SELECT enhanced_metadata FROM enhanced_metadata WHERE source_uri = :1", (source_uri,))
+        assert expected_content.lower() in text_result[0].lower(), f"Expected '{expected_content}' in document text"
+
+        # Verify predictable enhanced_metadata
+        cursor.execute(
+            "SELECT enhanced_metadata FROM enhanced_metadata WHERE source_uri = :1", (f"test://process/{file_fixture}",)
+        )
         metadata_result = cursor.fetchone()
         assert metadata_result is not None, "Enhanced metadata should be generated"
+        assert f"Document Type: {document_type}" in metadata_result[0], (
+            f"Expected 'Document Type: {document_type}' in metadata"
+        )
 
         # Verify document_chunks were created
-        cursor.execute("SELECT COUNT(*) FROM document_chunks WHERE source_uri = :1", (source_uri,))
-        chunk_count = cursor.fetchone()[0]
-        assert chunk_count > 0, "Document chunks should be created"
-
-    print(f"Successfully processed document end-to-end: {source_uri}")
+        cursor.execute(
+            "SELECT COUNT(*) FROM document_chunks WHERE source_uri = :1", (f"test://process/{file_fixture}",)
+        )
+        assert cursor.fetchone()[0] > 0, "Document chunks should be created"
