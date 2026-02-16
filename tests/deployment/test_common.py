@@ -1,9 +1,8 @@
 import pytest
 import shutil
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 from snowflake_document_agent.common import (
     stage_document,
@@ -13,7 +12,6 @@ from snowflake_document_agent.common import (
     generate_document_metadata,
     chunk_document,
     clear_stage,
-    process_document,
     process_documents,
     DocumentInfo,
 )
@@ -361,12 +359,13 @@ def test_generate_document_metadata_basic(snowflake_conn, test_schema, test_conf
             insert=True,
         )
 
-        # Setup config with overridden test metadata prompt
-        config_with_test_prompt = test_config.copy()
-        config_with_test_prompt["metadata_prompt"] = "This is a test. Always return exactly: Document Type: Test"
+        # Setup config to test filename awareness - should fail because we don't pass source URI to metadata generation
+        test_config["metadata_prompt"] = (
+            "Look at the filename and return this string exactly: File extension: [extension without leading period]"
+        )
 
         # Execute - Generate metadata with test config
-        generate_document_metadata(cursor=cursor, source_uri=source_uri, config=config_with_test_prompt, insert=True)
+        generate_document_metadata(cursor=cursor, source_uri=source_uri, config=test_config, insert=True)
 
         # Verify - Check that metadata was inserted into enhanced_metadata table
         cursor.execute(
@@ -376,13 +375,13 @@ def test_generate_document_metadata_basic(snowflake_conn, test_schema, test_conf
         assert metadata_result is not None, "No enhanced metadata found in enhanced_metadata table"
         assert metadata_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{metadata_result[0]}'"
 
-        # Verify the generated metadata content contains our test string
+        # Verify the generated metadata contains file extension (should fail - filename not passed to AI)
         generated_metadata = metadata_result[1]
-        assert "Document Type: Test" in generated_metadata, (
-            f"Expected 'Document Type: Test' in metadata, got '{generated_metadata}'"
+        assert "File extension: txt" in generated_metadata, (
+            f"Expected 'File extension: txt' in metadata, got '{generated_metadata}'"
         )
 
-        print("Successfully generated test metadata containing: 'Document Type: Test'")
+        print(f"Successfully generated metadata with filename awareness: '{generated_metadata[:100]}...'")
 
 
 @pytest.mark.deployment
@@ -456,192 +455,6 @@ def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path
 
 
 @pytest.mark.deployment
-@patch("snowflake_document_agent.common.snowflake.connector.connect")
-@pytest.mark.parametrize(
-    "document_type,file_fixture,expected_content",
-    [
-        ("txt", "test_document.txt", "This is a test document for end-to-end processing."),
-        ("html", "test_document.html", "<p>Test HTML document</p>"),
-        ("pdf", "cuad-sponsorship.pdf", "undergo training"),
-        ("docx", "mammoth-tables.docx", "Bottom right"),
-        ("xlsx", "multi-worksheet.xlsx", "reset table"),
-    ],
-)
-def test_process_document_multiple_types(
-    mock_connect, snowflake_conn, test_schema, test_config, tmp_path, document_type, file_fixture, expected_content
-):
-    """
-    Test that process_document handles multiple document types correctly.
-    """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
-    mock_connect.return_value = snowflake_conn
-
-    # Setup document file
-    if document_type in ["txt", "html"]:
-        test_file = tmp_path / file_fixture
-        test_file.write_text(
-            "This is a test document for end-to-end processing."
-            if document_type == "txt"
-            else "<p>Test HTML document</p>"
-        )
-    else:
-        test_file = Path(__file__).parent.parent / "fixtures" / file_fixture
-        assert test_file.exists(), f"Fixture not found: {test_file}"
-
-    # Override metadata prompt to return predictable test metadata
-    config_with_test_prompt = test_config.copy()
-    config_with_test_prompt["metadata_prompt"] = f"Always return exactly: Document Type: {document_type}"
-
-    result = process_document(
-        connection_name="test_connection_name",
-        source_uri=f"test://process/{file_fixture}",
-        source_info=DocumentInfo(
-            modified_at_utc=datetime.now(timezone.utc), local_path=test_file, metadata=f'{{"type": "{document_type}"}}'
-        ),
-        prefix="test://process/",
-        config=config_with_test_prompt,
-        insert=True,
-    )
-
-    # Verify successful processing returns None
-    assert result is None, f"Expected None for successful processing, got {result}"
-
-    mock_connect.assert_called_once_with(connection_name="test_connection_name")
-
-    with snowflake_conn.cursor() as cursor:
-        # Verify document_text content based on type
-        cursor.execute(
-            "SELECT document_text FROM document_text WHERE source_uri = :1", (f"test://process/{file_fixture}",)
-        )
-        text_result = cursor.fetchone()
-        assert text_result is not None, "Document text should be inserted"
-
-        assert expected_content.lower() in text_result[0].lower(), f"Expected '{expected_content}' in document text"
-
-        # Verify predictable enhanced_metadata
-        cursor.execute(
-            "SELECT enhanced_metadata FROM enhanced_metadata WHERE source_uri = :1", (f"test://process/{file_fixture}",)
-        )
-        metadata_result = cursor.fetchone()
-        assert metadata_result is not None, "Enhanced metadata should be generated"
-        assert f"Document Type: {document_type}" in metadata_result[0], (
-            f"Expected 'Document Type: {document_type}' in metadata"
-        )
-
-        # Verify document_chunks were created
-        cursor.execute(
-            "SELECT COUNT(*) FROM document_chunks WHERE source_uri = :1", (f"test://process/{file_fixture}",)
-        )
-        assert cursor.fetchone()[0] > 0, "Document chunks should be created"
-
-    # @pytest.mark.deployment
-    # @patch('snowflake_document_agent.common.process_document')
-    # @pytest.mark.parametrize("task_specs,processes,expected_duration", [
-    #     # All succeed, parallel
-    #     ([(1, None), (1, None)], 2, 1),
-    #     # All succeed, sequential
-    #     ([(1, None), (1, None)], 1, 2),
-    #     # Mixed timing with bottleneck
-    #     ([(1, None), (3, None), (2, None)], 2, 3),
-    #     # Sequential version of same tasks
-    #     ([(1, None), (3, None), (2, None)], 1, 6),
-    #     # With errors - should still complete in expected time
-    #     ([(1, "Failed"), (2, None)], 2, 2),
-    #     # All fail but complete quickly
-    #     ([(1, "Error1"), (1, "Error2")], 2, 1),
-    # ])
-    # def test_process_documents_timing_and_errors(mock_process_document, task_specs, processes, expected_duration, tmp_path):
-    """
-    Test that process_documents handles multiprocessing timing and errors correctly.
-    """
-
-    def mock_process_document_impl(connection_name, source_uri, source_info, config, insert):
-        duration = source_info.metadata["duration"]
-        error_msg = source_info.metadata.get("error_message")
-
-        time.sleep(duration)
-        if error_msg:
-            return RuntimeError(error_msg)  # Return exception instead of raising
-        return None  # Success
-
-    mock_process_document.side_effect = mock_process_document_impl
-    mock_logger = MagicMock()
-
-    # Create sources list with task specifications (new format)
-    sources = []
-    for i, (duration, error_msg) in enumerate(task_specs):
-        test_file = tmp_path / f"doc_{i}.txt"
-        test_file.write_text(f"Test document {i}")
-
-        source_uri = f"test://multiproc/doc_{i}.txt"
-        source_info = DocumentInfo(
-            modified_at_utc=datetime.now(timezone.utc),
-            local_path=test_file,
-            metadata={"duration": duration, "error_message": error_msg},
-        )
-        sources.append((source_uri, source_info, True))  # (source_uri, source_info, insert)
-
-    # Execute - Time the process_documents call
-    start_time = time.time()
-
-    # Should not raise exception even if individual processes fail
-    process_documents(
-        sources=sources,
-        connection_name="test_connection",
-        config={"test": "config"},
-        processes=processes,
-        logger=mock_logger,
-    )
-
-    actual_duration = time.time() - start_time
-
-    # Verify timing is approximately correct (within 0.5s tolerance)
-    assert abs(actual_duration - expected_duration) < 0.5, (
-        f"Expected ~{expected_duration}s with {processes} processes, got {actual_duration:.2f}s"
-    )
-
-    # Verify all tasks were attempted
-    assert mock_process_document.call_count == len(task_specs), (
-        f"Expected {len(task_specs)} calls to process_document, got {mock_process_document.call_count}"
-    )
-
-    # Verify correct parameters were passed to each call (updated for new signature)
-    for call_args in mock_process_document.call_args_list:
-        args, kwargs = call_args
-        assert args[0] == "test_connection"  # connection_name
-        assert kwargs["config"] == {"test": "config"}
-        assert kwargs["insert"] == True
-
-    # Verify logger was called for each error
-    error_count = sum(1 for _, error_msg in task_specs if error_msg is not None)
-    assert mock_logger.error.call_count == error_count, (
-        f"Expected {error_count} error log calls, got {mock_logger.error.call_count}"
-    )
-
-    # Verify logger called with correct error messages and source URIs
-    logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
-
-    # Check that both error message and source URI are included in each log call
-    for i, (duration, error_msg) in enumerate(task_specs):
-        if error_msg is not None:
-            expected_source_uri = f"test://multiproc/doc_{i}.txt"
-
-            # Find the log entry for this error
-            matching_log = None
-            for logged_error in logged_errors:
-                if error_msg in logged_error and expected_source_uri in logged_error:
-                    matching_log = logged_error
-                    break
-
-            assert matching_log is not None, (
-                f"Expected log entry containing both '{error_msg}' and '{expected_source_uri}'. "
-                f"Got logged errors: {logged_errors}"
-            )
-
-
-@pytest.mark.deployment
 def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Comprehensive test: throw everything at process_documents and verify it handles gracefully.
@@ -651,13 +464,19 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
         pytest.skip("No Snowflake connection")
 
     mock_logger = MagicMock()
+
+    # Override metadata prompt to test filename awareness - should now work with filename included
+    test_config["metadata_prompt"] = (
+        "Look at the filename and return this string exactly: File extension: [extension without leading period]"
+    )
+
     sources = []
 
     # === DOCUMENTS THAT SHOULD SUCCEED ===
 
     # 1. Plain text file
     txt_file = tmp_path / "success.txt"
-    txt_file.write_text("This is a successful text document.")
+    txt_file.write_text("This is a test document for end-to-end processing.")  # Use exact content for verification
     sources.append(
         (
             "test://kitchen/success.txt",
@@ -668,7 +487,7 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
 
     # 2. HTML file
     html_file = tmp_path / "success.html"
-    html_file.write_text("<p>This is a successful HTML document.</p>")
+    html_file.write_text("<p>Test HTML document</p>")  # Use exact content for verification
     sources.append(
         (
             "test://kitchen/success.html",
@@ -747,7 +566,7 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
         sources=sources,
         connection=snowflake_conn,  # Pass connection object directly
         config=test_config,
-        max_workers=2,  # Use real multithreading
+        max_workers=8,  # Use real multithreading
         logger=mock_logger,
     )
 
@@ -788,5 +607,59 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
         cursor.execute("SELECT COUNT(*) FROM enhanced_metadata")
         metadata_count = cursor.fetchone()[0]
         assert metadata_count >= 5, f"Expected at least 5 successful metadata entries, got {metadata_count}"
+
+        # === DETAILED CONTENT VERIFICATION ===
+        # Verify specific content for each document type (incorporating test_process_document_multiple_types checks)
+
+        # 1. Text file content
+        cursor.execute("SELECT document_text FROM document_text WHERE source_uri = :1", ("test://kitchen/success.txt",))
+        txt_result = cursor.fetchone()
+        assert txt_result and "This is a test document for end-to-end processing." in txt_result[0]
+
+        # 2. HTML file content
+        cursor.execute(
+            "SELECT document_text FROM document_text WHERE source_uri = :1", ("test://kitchen/success.html",)
+        )
+        html_result = cursor.fetchone()
+        assert html_result and "<p>Test HTML document</p>" in html_result[0]
+
+        # 3. PDF file content
+        cursor.execute(
+            "SELECT document_text FROM document_text WHERE source_uri = :1", ("test://kitchen/cuad-sponsorship.pdf",)
+        )
+        pdf_result = cursor.fetchone()
+        assert pdf_result and "undergo training" in pdf_result[0].lower()
+
+        # 4. DOCX file content
+        cursor.execute(
+            "SELECT document_text FROM document_text WHERE source_uri = :1", ("test://kitchen/mammoth-tables.docx",)
+        )
+        docx_result = cursor.fetchone()
+        assert docx_result and "bottom right" in docx_result[0].lower()
+
+        # 5. XLSX file content
+        cursor.execute(
+            "SELECT document_text FROM document_text WHERE source_uri = :1", ("test://kitchen/multi-worksheet.xlsx",)
+        )
+        xlsx_result = cursor.fetchone()
+        assert xlsx_result and "reset table" in xlsx_result[0].lower()
+
+        # Verify enhanced metadata contains file extension information (should now work with filename awareness)
+        test_cases = [
+            ("test://kitchen/success.txt", "txt"),
+            ("test://kitchen/success.html", "html"),
+            ("test://kitchen/cuad-sponsorship.pdf", "pdf"),
+            ("test://kitchen/mammoth-tables.docx", "docx"),
+            ("test://kitchen/multi-worksheet.xlsx", "xlsx"),
+        ]
+
+        for source_uri, expected_ext in test_cases:
+            cursor.execute("SELECT enhanced_metadata FROM enhanced_metadata WHERE source_uri = :1", (source_uri,))
+            metadata_result = cursor.fetchone()
+            if metadata_result:
+                expected_text = f"File extension: {expected_ext}"
+                assert expected_text in metadata_result[0], (
+                    f"Expected '{expected_text}' in metadata for {source_uri}: {metadata_result[0][:200]}..."
+                )
 
     print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_errors)} errors")

@@ -68,15 +68,12 @@ def test_process_document_error(mock_connect, tmp_path):
     """
     Test that process_document returns exception objects instead of raising them.
     """
-    # Mock connection with cursor context manager to reach the file reading error
-    mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
-
     # Use a nonexistent file path to trigger FileNotFoundError in the txt processing path
     nonexistent_file = tmp_path / "does_not_exist.txt"
     # Explicitly don't create the file - this will cause FileNotFoundError when process_document tries to read it
 
     result = process_document(
-        connection_name="dummy_connection",
+        connection=mock_connect,
         source_uri="test://error/does_not_exist.txt",
         source_info=DocumentInfo(
             modified_at_utc=datetime.now(timezone.utc),
