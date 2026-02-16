@@ -359,7 +359,7 @@ def process_documents(
         }
     for future in as_completed(futures):
         source_uri = futures[future]
-    try:
-        future.result()
-    except Exception as err:
-        logger.error(f"Error processing {source_uri}: {err}")
+        try:
+            future.result()
+        except Exception as err:
+            logger.error(f"Error processing {source_uri}: {type(err).__name__} - {err}")
