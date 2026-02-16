@@ -25,6 +25,7 @@ def test_word_doc_to_html_basic():
 
     # Since the fixture is named "mammoth-tables", check for table elements
     assert "<table>" in html_lower, "Expected table elements in mammoth-tables fixture"
+    assert "bottom right" in html_lower, "Expected 'Bottom right' content in mammoth-tables fixture"
 
     print(f"Successfully converted DOCX to {len(html_content)} characters of HTML")
 
