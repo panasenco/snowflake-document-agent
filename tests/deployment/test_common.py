@@ -13,7 +13,6 @@ from snowflake_document_agent.common import (
     chunk_document,
     clear_stage,
     process_documents,
-    DocumentInfo,
 )
 
 
@@ -472,6 +471,13 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
 
     sources = []
 
+    # Define specific timestamps for testing
+    txt_modified = datetime(2024, 1, 1, 10, 30, 0, tzinfo=timezone.utc)
+    html_modified = datetime(2024, 1, 2, 11, 45, 0, tzinfo=timezone.utc)
+    pdf_modified = datetime(2024, 1, 3, 14, 15, 0, tzinfo=timezone.utc)
+    docx_modified = datetime(2024, 1, 4, 16, 20, 0, tzinfo=timezone.utc)
+    xlsx_modified = datetime(2024, 1, 5, 9, 10, 0, tzinfo=timezone.utc)
+
     # === DOCUMENTS THAT SHOULD SUCCEED ===
 
     # 1. Plain text file
@@ -480,7 +486,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/success.txt",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=txt_file),
+            txt_file,
+            txt_modified,
+            "",  # metadata (empty for now)
             True,
         )
     )
@@ -491,7 +499,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/success.html",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=html_file),
+            html_file,
+            html_modified,
+            "",  # metadata (empty for now)
             True,
         )
     )
@@ -501,7 +511,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/cuad-sponsorship.pdf",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=pdf_file),
+            pdf_file,
+            pdf_modified,
+            "",  # metadata (empty for now)
             True,
         )
     )
@@ -511,7 +523,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/mammoth-tables.docx",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=docx_file),
+            docx_file,
+            docx_modified,
+            "",  # metadata (empty for now)
             True,
         )
     )
@@ -521,7 +535,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/multi-worksheet.xlsx",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=xlsx_file),
+            xlsx_file,
+            xlsx_modified,
+            "",  # metadata (empty for now)
             True,
         )
     )
@@ -533,7 +549,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/missing.txt",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=missing_file),
+            missing_file,
+            datetime(2024, 1, 6, 12, 0, 0, tzinfo=timezone.utc),
+            "",
             True,
         )
     )
@@ -544,7 +562,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/bad_extension.xyz",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=bad_ext_file),
+            bad_ext_file,
+            datetime(2024, 1, 7, 13, 0, 0, tzinfo=timezone.utc),
+            "",
             True,
         )
     )
@@ -556,7 +576,9 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     sources.append(
         (
             "test://kitchen/actually_excel.pdf",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=excel_as_pdf),
+            excel_as_pdf,
+            datetime(2024, 1, 8, 14, 0, 0, tzinfo=timezone.utc),
+            "",
             True,
         )
     )
@@ -661,5 +683,27 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
                 assert expected_text in metadata_result[0], (
                     f"Expected '{expected_text}' in metadata for {source_uri}: {metadata_result[0][:200]}..."
                 )
+
+        # Verify basic document metadata (modified_at_utc) is stored with correct timestamps
+        expected_metadata = [
+            ("test://kitchen/success.txt", txt_modified),
+            ("test://kitchen/success.html", html_modified),
+            ("test://kitchen/cuad-sponsorship.pdf", pdf_modified),
+            ("test://kitchen/mammoth-tables.docx", docx_modified),
+            ("test://kitchen/multi-worksheet.xlsx", xlsx_modified),
+        ]
+
+        for source_uri, expected_timestamp in expected_metadata:
+            cursor.execute("SELECT modified_at_utc FROM document_metadata WHERE source_uri = :1", (source_uri,))
+            metadata_result = cursor.fetchone()
+            assert metadata_result, (
+                f"Expected document_metadata entry for {source_uri} - this suggests update_document_metadata() is not being called in process_document()"
+            )
+            stored_timestamp = metadata_result[0]
+            # Snowflake TIMESTAMP_NTZ doesn't preserve timezone, so compare as naive datetimes
+            expected_naive = expected_timestamp.replace(tzinfo=None)
+            assert stored_timestamp == expected_naive, (
+                f"Expected timestamp {expected_naive} for {source_uri}, got {stored_timestamp}"
+            )
 
     print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_errors)} errors")
