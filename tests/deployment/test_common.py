@@ -1,4 +1,5 @@
 import pytest
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -641,16 +642,13 @@ def test_process_document_multiple_types(
 
 
 @pytest.mark.deployment
-def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path, pytestconfig):
+def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Comprehensive test: throw everything at process_documents and verify it handles gracefully.
     Tests all document types, nonexistent files, bad extensions, and corrupted files.
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
-
-    # Get the connection name from pytest config (same as used by snowflake_conn fixture)
-    connection_name = pytestconfig.getoption("--snowflake-connection-name")
 
     mock_logger = MagicMock()
     sources = []
@@ -732,13 +730,14 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
         )
     )
 
-    # 8. Corrupted "PDF" (actually text file, should fail parsing)
-    fake_pdf = tmp_path / "corrupted.pdf"
-    fake_pdf.write_text("This is not a real PDF file content")
+    # 8. Corrupted "PDF" (actually Excel file, should fail parsing)
+    excel_as_pdf = tmp_path / "actually_excel.pdf"
+    excel_fixture = Path(__file__).parent.parent / "fixtures" / "multi-worksheet.xlsx"
+    shutil.copy(excel_fixture, excel_as_pdf)  # Copy Excel file with .pdf extension
     sources.append(
         (
-            "test://kitchen/corrupted.pdf",
-            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=fake_pdf),
+            "test://kitchen/actually_excel.pdf",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=excel_as_pdf),
             True,
         )
     )
@@ -746,24 +745,27 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     # Execute process_documents - should not crash despite failures
     process_documents(
         sources=sources,
-        connection_name=connection_name,
+        connection=snowflake_conn,  # Pass connection object directly
         config=test_config,
-        processes=2,  # Use real multiprocessing
+        max_workers=2,  # Use real multithreading
         logger=mock_logger,
     )
 
     # === VERIFICATIONS ===
 
+    logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
+    print(f"DEBUG: Got {mock_logger.error.call_count} error logs:")
+    for i, error in enumerate(logged_errors):
+        print(f"  {i + 1}. {error}")
+
     # Should have logged errors for the 3 failing documents
     assert mock_logger.error.call_count == 3, f"Expected 3 error logs, got {mock_logger.error.call_count}"
-
-    logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
 
     # Verify each expected failure was logged with source URI
     expected_failures = [
         ("missing.txt", "FileNotFoundError"),
         ("bad_extension.xyz", "unsupported extension"),
-        ("corrupted.pdf", "parsing failed"),
+        ("actually_excel.pdf", "parsing failed"),  # Excel file with .pdf extension should fail parsing
     ]
 
     for expected_file, expected_error_type in expected_failures:
