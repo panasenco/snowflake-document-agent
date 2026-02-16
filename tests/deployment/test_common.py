@@ -1,7 +1,8 @@
 import pytest
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from snowflake_document_agent.common import (
     stage_document,
@@ -12,6 +13,7 @@ from snowflake_document_agent.common import (
     chunk_document,
     clear_stage,
     process_document,
+    process_documents,
     DocumentInfo,
 )
 
@@ -491,7 +493,7 @@ def test_process_document_multiple_types(
     config_with_test_prompt = test_config.copy()
     config_with_test_prompt["metadata_prompt"] = f"Always return exactly: Document Type: {document_type}"
 
-    process_document(
+    result = process_document(
         connection_name="test_connection_name",
         source_uri=f"test://process/{file_fixture}",
         source_info=DocumentInfo(
@@ -501,6 +503,9 @@ def test_process_document_multiple_types(
         config=config_with_test_prompt,
         insert=True,
     )
+
+    # Verify successful processing returns None
+    assert result is None, f"Expected None for successful processing, got {result}"
 
     mock_connect.assert_called_once_with(connection_name="test_connection_name")
 
@@ -529,3 +534,257 @@ def test_process_document_multiple_types(
             "SELECT COUNT(*) FROM document_chunks WHERE source_uri = :1", (f"test://process/{file_fixture}",)
         )
         assert cursor.fetchone()[0] > 0, "Document chunks should be created"
+
+    # @pytest.mark.deployment
+    # @patch('snowflake_document_agent.common.process_document')
+    # @pytest.mark.parametrize("task_specs,processes,expected_duration", [
+    #     # All succeed, parallel
+    #     ([(1, None), (1, None)], 2, 1),
+    #     # All succeed, sequential
+    #     ([(1, None), (1, None)], 1, 2),
+    #     # Mixed timing with bottleneck
+    #     ([(1, None), (3, None), (2, None)], 2, 3),
+    #     # Sequential version of same tasks
+    #     ([(1, None), (3, None), (2, None)], 1, 6),
+    #     # With errors - should still complete in expected time
+    #     ([(1, "Failed"), (2, None)], 2, 2),
+    #     # All fail but complete quickly
+    #     ([(1, "Error1"), (1, "Error2")], 2, 1),
+    # ])
+    # def test_process_documents_timing_and_errors(mock_process_document, task_specs, processes, expected_duration, tmp_path):
+    """
+    Test that process_documents handles multiprocessing timing and errors correctly.
+    """
+
+    def mock_process_document_impl(connection_name, source_uri, source_info, config, insert):
+        duration = source_info.metadata["duration"]
+        error_msg = source_info.metadata.get("error_message")
+
+        time.sleep(duration)
+        if error_msg:
+            return RuntimeError(error_msg)  # Return exception instead of raising
+        return None  # Success
+
+    mock_process_document.side_effect = mock_process_document_impl
+    mock_logger = MagicMock()
+
+    # Create sources list with task specifications (new format)
+    sources = []
+    for i, (duration, error_msg) in enumerate(task_specs):
+        test_file = tmp_path / f"doc_{i}.txt"
+        test_file.write_text(f"Test document {i}")
+
+        source_uri = f"test://multiproc/doc_{i}.txt"
+        source_info = DocumentInfo(
+            modified_at_utc=datetime.now(timezone.utc),
+            local_path=test_file,
+            metadata={"duration": duration, "error_message": error_msg},
+        )
+        sources.append((source_uri, source_info, True))  # (source_uri, source_info, insert)
+
+    # Execute - Time the process_documents call
+    start_time = time.time()
+
+    # Should not raise exception even if individual processes fail
+    process_documents(
+        sources=sources,
+        connection_name="test_connection",
+        config={"test": "config"},
+        processes=processes,
+        logger=mock_logger,
+    )
+
+    actual_duration = time.time() - start_time
+
+    # Verify timing is approximately correct (within 0.5s tolerance)
+    assert abs(actual_duration - expected_duration) < 0.5, (
+        f"Expected ~{expected_duration}s with {processes} processes, got {actual_duration:.2f}s"
+    )
+
+    # Verify all tasks were attempted
+    assert mock_process_document.call_count == len(task_specs), (
+        f"Expected {len(task_specs)} calls to process_document, got {mock_process_document.call_count}"
+    )
+
+    # Verify correct parameters were passed to each call (updated for new signature)
+    for call_args in mock_process_document.call_args_list:
+        args, kwargs = call_args
+        assert args[0] == "test_connection"  # connection_name
+        assert kwargs["config"] == {"test": "config"}
+        assert kwargs["insert"] == True
+
+    # Verify logger was called for each error
+    error_count = sum(1 for _, error_msg in task_specs if error_msg is not None)
+    assert mock_logger.error.call_count == error_count, (
+        f"Expected {error_count} error log calls, got {mock_logger.error.call_count}"
+    )
+
+    # Verify logger called with correct error messages and source URIs
+    logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
+
+    # Check that both error message and source URI are included in each log call
+    for i, (duration, error_msg) in enumerate(task_specs):
+        if error_msg is not None:
+            expected_source_uri = f"test://multiproc/doc_{i}.txt"
+
+            # Find the log entry for this error
+            matching_log = None
+            for logged_error in logged_errors:
+                if error_msg in logged_error and expected_source_uri in logged_error:
+                    matching_log = logged_error
+                    break
+
+            assert matching_log is not None, (
+                f"Expected log entry containing both '{error_msg}' and '{expected_source_uri}'. "
+                f"Got logged errors: {logged_errors}"
+            )
+
+
+@pytest.mark.deployment
+def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path, pytestconfig):
+    """
+    Comprehensive test: throw everything at process_documents and verify it handles gracefully.
+    Tests all document types, nonexistent files, bad extensions, and corrupted files.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    # Get the connection name from pytest config (same as used by snowflake_conn fixture)
+    connection_name = pytestconfig.getoption("--snowflake-connection-name")
+
+    mock_logger = MagicMock()
+    sources = []
+
+    # === DOCUMENTS THAT SHOULD SUCCEED ===
+
+    # 1. Plain text file
+    txt_file = tmp_path / "success.txt"
+    txt_file.write_text("This is a successful text document.")
+    sources.append(
+        (
+            "test://kitchen/success.txt",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=txt_file),
+            True,
+        )
+    )
+
+    # 2. HTML file
+    html_file = tmp_path / "success.html"
+    html_file.write_text("<p>This is a successful HTML document.</p>")
+    sources.append(
+        (
+            "test://kitchen/success.html",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=html_file),
+            True,
+        )
+    )
+
+    # 3. PDF fixture (should parse successfully)
+    pdf_file = Path(__file__).parent.parent / "fixtures" / "cuad-sponsorship.pdf"
+    sources.append(
+        (
+            "test://kitchen/cuad-sponsorship.pdf",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=pdf_file),
+            True,
+        )
+    )
+
+    # 4. DOCX fixture (should convert successfully)
+    docx_file = Path(__file__).parent.parent / "fixtures" / "mammoth-tables.docx"
+    sources.append(
+        (
+            "test://kitchen/mammoth-tables.docx",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=docx_file),
+            True,
+        )
+    )
+
+    # 5. XLSX fixture (should convert successfully)
+    xlsx_file = Path(__file__).parent.parent / "fixtures" / "multi-worksheet.xlsx"
+    sources.append(
+        (
+            "test://kitchen/multi-worksheet.xlsx",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=xlsx_file),
+            True,
+        )
+    )
+
+    # === DOCUMENTS THAT SHOULD FAIL ===
+
+    # 6. Nonexistent file (FileNotFoundError)
+    missing_file = tmp_path / "does_not_exist.txt"
+    sources.append(
+        (
+            "test://kitchen/missing.txt",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=missing_file),
+            True,
+        )
+    )
+
+    # 7. Unsupported file extension (ValueError from stage_document)
+    bad_ext_file = tmp_path / "bad_extension.xyz"
+    bad_ext_file.write_text("This has an unsupported extension")
+    sources.append(
+        (
+            "test://kitchen/bad_extension.xyz",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=bad_ext_file),
+            True,
+        )
+    )
+
+    # 8. Corrupted "PDF" (actually text file, should fail parsing)
+    fake_pdf = tmp_path / "corrupted.pdf"
+    fake_pdf.write_text("This is not a real PDF file content")
+    sources.append(
+        (
+            "test://kitchen/corrupted.pdf",
+            DocumentInfo(modified_at_utc=datetime.now(timezone.utc), local_path=fake_pdf),
+            True,
+        )
+    )
+
+    # Execute process_documents - should not crash despite failures
+    process_documents(
+        sources=sources,
+        connection_name=connection_name,
+        config=test_config,
+        processes=2,  # Use real multiprocessing
+        logger=mock_logger,
+    )
+
+    # === VERIFICATIONS ===
+
+    # Should have logged errors for the 3 failing documents
+    assert mock_logger.error.call_count == 3, f"Expected 3 error logs, got {mock_logger.error.call_count}"
+
+    logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
+
+    # Verify each expected failure was logged with source URI
+    expected_failures = [
+        ("missing.txt", "FileNotFoundError"),
+        ("bad_extension.xyz", "unsupported extension"),
+        ("corrupted.pdf", "parsing failed"),
+    ]
+
+    for expected_file, expected_error_type in expected_failures:
+        matching_log = None
+        for logged_error in logged_errors:
+            if expected_file in logged_error and expected_error_type.lower() in logged_error.lower():
+                matching_log = logged_error
+                break
+
+        assert matching_log is not None, (
+            f"Expected error log containing '{expected_file}' and '{expected_error_type}'. Got: {logged_errors}"
+        )
+
+    # Verify successful documents were processed (check database)
+    with snowflake_conn.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM document_text")
+        text_count = cursor.fetchone()[0]
+        assert text_count >= 5, f"Expected at least 5 successful document_text entries, got {text_count}"
+
+        cursor.execute("SELECT COUNT(*) FROM enhanced_metadata")
+        metadata_count = cursor.fetchone()[0]
+        assert metadata_count >= 5, f"Expected at least 5 successful metadata entries, got {metadata_count}"
+
+    print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_errors)} errors")

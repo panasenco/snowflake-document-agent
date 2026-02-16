@@ -1,6 +1,8 @@
 from pathlib import Path
+from datetime import datetime, timezone
+from unittest.mock import patch
 
-from snowflake_document_agent.common import word_doc_to_html, excel_to_html
+from snowflake_document_agent.common import word_doc_to_html, excel_to_html, process_document, DocumentInfo
 
 
 def test_word_doc_to_html_basic():
@@ -59,3 +61,33 @@ def test_excel_to_html_basic():
     assert table_count >= 2, f"Expected at least 2 tables for multi-worksheet, got {table_count}"
 
     print(f"Successfully converted XLSX to {len(html_content)} characters of HTML with {table_count} tables")
+
+
+@patch("snowflake_document_agent.common.snowflake.connector.connect")
+def test_process_document_error(mock_connect, tmp_path):
+    """
+    Test that process_document returns exception objects instead of raising them.
+    """
+    # Mock connection with cursor context manager to reach the file reading error
+    mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+
+    # Use a nonexistent file path to trigger FileNotFoundError in the txt processing path
+    nonexistent_file = tmp_path / "does_not_exist.txt"
+    # Explicitly don't create the file - this will cause FileNotFoundError when process_document tries to read it
+
+    result = process_document(
+        connection_name="dummy_connection",
+        source_uri="test://error/does_not_exist.txt",
+        source_info=DocumentInfo(
+            modified_at_utc=datetime.now(timezone.utc),
+            local_path=nonexistent_file,  # This file doesn't exist
+            metadata='{"type": "error_test"}',
+        ),
+        prefix="test://error/",
+        config={"test": "config"},
+        insert=True,
+    )
+
+    # Verify that an exception object is returned instead of raised
+    assert isinstance(result, Exception), f"Expected exception object, got {type(result)}: {result}"
+    assert isinstance(result, FileNotFoundError), f"Expected FileNotFoundError, got {type(result)}"
