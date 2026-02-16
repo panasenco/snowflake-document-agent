@@ -238,10 +238,11 @@ def generate_document_metadata(
             :1 as source_uri,
             snowflake.cortex.complete(
                 '{config["metadata_model"]}',
-                '{config["metadata_prompt"].replace("'", "''").replace(chr(10), chr(92) + "n")}'
-                || chr(10) || chr(10) || 'Doc starts here:' || chr(10)
+                || '{config["metadata_prompt"].replace("'", "''").replace(chr(10), chr(92) + "n")}'
+                || chr(10) || chr(10) || 'Document URI: ' || :1
+                || chr(10) || 'Document starts here:' || chr(10)
                 || substr(document_text, 1, {config["metadata_first_chars"]})
-                || chr(10) || 'Doc ends here' || chr(10) || chr(10)
+                || chr(10) || 'Document ends here' || chr(10) || chr(10)
             ) as enhanced_metadata
         from document_text
         where source_uri = :1
