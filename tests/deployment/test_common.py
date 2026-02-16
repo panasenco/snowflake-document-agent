@@ -1,5 +1,6 @@
 import pytest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from snowflake_document_agent.common import (
     stage_document,
@@ -9,6 +10,8 @@ from snowflake_document_agent.common import (
     generate_document_metadata,
     chunk_document,
     clear_stage,
+    process_document,
+    DocumentInfo,
 )
 
 
@@ -448,3 +451,59 @@ def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path
             )
 
         print(f"Successfully created {len(document_chunks)} precise chunks: {document_chunks}")
+
+
+@pytest.mark.deployment
+@patch('snowflake_document_agent.common.snowflake.connector.connect')
+def test_process_document_basic(mock_connect, snowflake_conn, test_schema, test_config, tmp_path):
+    """
+    Test that process_document runs end-to-end processing for a simple text document.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    # Mock snowflake.connector.connect to return our test connection
+    mock_connect.return_value = snowflake_conn
+
+    # Setup - Create a simple test document
+    test_file = tmp_path / "test_document.txt"
+    test_file.write_text("This is a test document for end-to-end processing.")
+
+    source_uri = "test://process/test_document.txt"
+    document_info = DocumentInfo(
+        modified_at_utc=datetime.now(timezone.utc),
+        local_path=test_file,
+        metadata='{"author": "test", "type": "text"}'
+    )
+
+    # Execute - Process the document
+    process_document(
+        connection_name="test_connection_name",
+        source_uri=source_uri,
+        source_info=document_info,
+        prefix="test://process/",
+        config=test_config,
+        insert=True,
+    )
+
+    # Verify - Check that snowflake.connector.connect was called with our connection name
+    mock_connect.assert_called_once_with(connection_name="test_connection_name")
+
+    with snowflake_conn.cursor() as cursor:
+        # Verify document_text was inserted
+        cursor.execute("SELECT document_text FROM document_text WHERE source_uri = :1", (source_uri,))
+        text_result = cursor.fetchone()
+        assert text_result is not None, "Document text should be inserted"
+        assert "This is a test document for end-to-end processing." in text_result[0]
+
+        # Verify enhanced_metadata was generated
+        cursor.execute("SELECT enhanced_metadata FROM enhanced_metadata WHERE source_uri = :1", (source_uri,))
+        metadata_result = cursor.fetchone()
+        assert metadata_result is not None, "Enhanced metadata should be generated"
+
+        # Verify document_chunks were created
+        cursor.execute("SELECT COUNT(*) FROM document_chunks WHERE source_uri = :1", (source_uri,))
+        chunk_count = cursor.fetchone()[0]
+        assert chunk_count > 0, "Document chunks should be created"
+
+    print(f"Successfully processed document end-to-end: {source_uri}")

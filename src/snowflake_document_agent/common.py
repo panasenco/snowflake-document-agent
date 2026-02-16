@@ -302,8 +302,7 @@ def chunk_document(
 
 
 def process_document(
-    conn: SnowflakeConnection,
-    *,
+    connection_name: str,
     source_uri: str,
     source_info: DocumentInfo,
     prefix: str,
@@ -311,13 +310,35 @@ def process_document(
     insert: bool,
 ) -> None:
     """Process a single document end-to-end."""
+    with snowflake.connector.connect(connection_name=connection_name).cursor() as cursor:
+        document_type = source_info.local_path.suffix.removeprefix(".").lower()
+        match document_type:
+            case "html" | "txt":
+                # Upload the contents directly
+                update_document_text(
+                    cursor, source_uri=source_uri, text=source_info.local_path.read_text(), insert=insert
+                )
+            case "xls" | "xlsx":
+                # Convert Excel to HTML
+                document_html = excel_to_html(source_info.local_path)
+                update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
+            case "doc" | "docx":
+                # Convert Word to HTML
+                document_html = word_doc_to_html(source_info.local_path)
+                update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
+            case _:
+                # Parse in Snowflake
+                stage_path = stage_document(cursor, source_uri=source_uri, local_path=source_info.local_path)
+                parse_document(cursor, source_uri=source_uri, stage_path=stage_path, insert=insert)
+        generate_document_metadata(cursor, source_uri=source_uri, config=config, insert=insert)
+        chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
 
 
 def process_documents(
     sources: dict[str, DocumentInfoProtocol],
     *,
     prefix: str,
-    snowflake_connection: SnowflakeConnection | str = "default",
+    connection_name: str = "default",
     config: dict[str, Any] | None = None,
 ) -> None:
     """Process documents end-to-end in parallel.
