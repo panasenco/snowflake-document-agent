@@ -707,3 +707,63 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
             )
 
     print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_errors)} errors")
+
+
+@pytest.mark.deployment
+def test_get_snowflake_documents(snowflake_conn, test_schema, test_config, tmp_path):
+    """
+    Test get_snowflake_documents function - should return documents matching a prefix.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    from snowflake_document_agent.common import get_snowflake_documents, update_document_metadata
+
+    # Define test data with different prefixes
+    test_documents = [
+        ("s3://bucket/folder1/doc1.pdf", datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc), "metadata for doc1"),
+        ("s3://bucket/folder1/doc2.txt", datetime(2024, 1, 2, 11, 0, 0, tzinfo=timezone.utc), "metadata for doc2"),
+        ("s3://bucket/folder2/doc3.docx", datetime(2024, 1, 3, 12, 0, 0, tzinfo=timezone.utc), "metadata for doc3"),
+        ("gcs://other-bucket/doc4.xlsx", datetime(2024, 1, 4, 13, 0, 0, tzinfo=timezone.utc), "metadata for doc4"),
+    ]
+
+    # Insert test document metadata
+    with snowflake_conn.cursor() as cursor:
+        for source_uri, modified_at_utc, metadata in test_documents:
+            update_document_metadata(
+                cursor, source_uri=source_uri, modified_at_utc=modified_at_utc, metadata=metadata, insert=True
+            )
+
+    # Test 1: Get documents with "s3://bucket/folder1/" prefix
+    result = get_snowflake_documents(snowflake_conn, prefix="s3://bucket/folder1/", config=test_config)
+
+    assert isinstance(result, dict), "Should return a dictionary"
+    assert len(result) == 2, f"Expected 2 documents with prefix 's3://bucket/folder1/', got {len(result)}"
+
+    # Verify the correct documents are returned
+    assert "s3://bucket/folder1/doc1.pdf" in result
+    assert "s3://bucket/folder1/doc2.txt" in result
+    assert "s3://bucket/folder2/doc3.docx" not in result
+    assert "gcs://other-bucket/doc4.xlsx" not in result
+
+    # Test 2: Verify return value format (modified_at_utc, metadata) tuples
+    doc1_info = result["s3://bucket/folder1/doc1.pdf"]
+    assert isinstance(doc1_info, tuple), "Should return tuples"
+    assert len(doc1_info) == 2, "Tuple should have 2 elements: (modified_at_utc, metadata)"
+
+    modified_at_utc, metadata = doc1_info
+    assert isinstance(modified_at_utc, datetime), "First element should be datetime"
+    assert isinstance(metadata, str), "Second element should be string"
+
+    # Snowflake TIMESTAMP_NTZ doesn't preserve timezone, so compare as naive datetime
+    expected_modified = datetime(2024, 1, 1, 10, 0, 0)  # naive datetime
+    assert modified_at_utc == expected_modified, f"Expected {expected_modified}, got {modified_at_utc}"
+    assert metadata == "metadata for doc1", f"Expected 'metadata for doc1', got '{metadata}'"
+
+    # Test 3: Get documents with "s3://bucket/" prefix (should get folder1 and folder2)
+    result_broad = get_snowflake_documents(snowflake_conn, prefix="s3://bucket/", config=test_config)
+    assert len(result_broad) == 3, f"Expected 3 documents with prefix 's3://bucket/', got {len(result_broad)}"
+
+    # Test 4: Get documents with non-existent prefix
+    result_empty = get_snowflake_documents(snowflake_conn, prefix="nonexistent://", config=test_config)
+    assert len(result_empty) == 0, f"Expected 0 documents with non-existent prefix, got {len(result_empty)}"

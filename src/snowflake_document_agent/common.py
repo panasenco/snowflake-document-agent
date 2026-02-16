@@ -366,11 +366,20 @@ def process_documents(
 
 
 def get_snowflake_documents(
-    conn: snowflake.connector.SnowflakeConnection,
+    connection: snowflake.connector.SnowflakeConnection,
     *,
     prefix: str,
     config: dict[str, Any],
 ) -> dict[str, tuple[datetime, str]]:
     """Get information about the documents currently in Snowflake.
     Returns a dictionary with source_uri's as keys and (modified_at_utc, metadata) tuples as values.
+    Filter on source_uri prefixes, e.g. "local" for URIs like "local://path/to/the/file".
+    The prefix can also be used to filter for subfolders, e.g. "local://path/to".
     """
+    with connection.cursor() as cursor:
+        # Query document_metadata table for documents matching the prefix
+        cursor.execute(
+            "select source_uri, modified_at_utc, metadata from document_metadata where source_uri like :1 || '%'",
+            (prefix,),
+        )
+        return {source_uri: (modified_at_utc, metadata) for source_uri, modified_at_utc, metadata in cursor}
