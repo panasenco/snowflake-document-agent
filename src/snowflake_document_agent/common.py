@@ -441,25 +441,35 @@ def process_changed_documents(
         logger.info(f"Deleting document {source_uri} from Snowflake...")
     delete_documents(connection, delete_uris=deleted_uris, config=config)
     # Initialize a dict with source_uri's as keys and insert bools as values
-    process_sources = {}
+    source_inserts = {}
     for source_uri in source_uris - target_uris:
         logger.info(f"Ingesting new document {source_uri} into Snowflake...")
-        process_sources[source_uri] = True
+        source_inserts[source_uri] = True
     for source_uri in source_uris & target_uris:
         if sources[source_uri][0] > targets[source_uri][0]:
             logger.info(f"Reingesting modified (newer timestamp) document {source_uri} into Snowflake...")
-            process_sources[source_uri] = False
+            source_inserts[source_uri] = False
         elif sources[source_uri][1] != targets[source_uri][1]:
             logger.info(f"Reingesting modified (changed metadata) document {source_uri} into Snowflake...")
-            process_sources[source_uri] = False
+            source_inserts[source_uri] = False
+    # Create a list of downloaded source files, handling errors gracefully
+    source_files = {}
+    for source_uri in source_inserts:
+        try:
+            source_files[source_uri] = downloader(source_uri)
+        except Exception as err:
+            logger.error(f"Failed to download {source_uri}: {type(err).__name__} - {err}")
     # Process the added and modified documents
     process_documents(
         connection,
         [
-            (source_uri, downloader(source_uri), sources[source_uri][0], sources[source_uri][1], insert)
-            for source_uri, insert in process_sources.items()
+            (source_uri, local_path, sources[source_uri][0], sources[source_uri][1], source_inserts[source_uri])
+            for source_uri, local_path in source_files.items()
         ],
         config=config,
         max_workers=max_workers,
         logger=logger,
     )
+    # Make sure Cortex search services reflect the changes
+    if deleted_uris or source_files:
+        refresh_search_services(connection, config)
