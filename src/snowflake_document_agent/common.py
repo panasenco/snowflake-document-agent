@@ -36,6 +36,7 @@ def configure_connection(connection: SnowflakeConnection, config: dict[str, Any]
         for attribute in ["role", "warehouse", "database", "schema"]:
             if attribute in config:
                 cursor.execute(f"use {attribute} {config[attribute]}")
+        cursor.execute("alter session set autocommit = false")
 
 
 def clear_stage(cursor: SnowflakeCursor) -> None:
@@ -305,34 +306,43 @@ def process_document(
     metadata: str,
     config: dict[str, Any],
     insert: bool,
+    logger: Logger = getLogger(),
 ) -> None:
     """Process a single document end-to-end."""
     with connection.cursor() as cursor:
-        document_type = local_path.suffix.removeprefix(".").lower()
-        match document_type:
-            case "html" | "txt":
-                # Upload the contents directly
-                update_document_text(cursor, source_uri=source_uri, text=local_path.read_text(), insert=insert)
-            case "xls" | "xlsx":
-                # Convert Excel to HTML
-                document_html = excel_to_html(local_path)
-                update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
-            case "doc" | "docx":
-                # Convert Word to HTML
-                document_html = word_doc_to_html(local_path)
-                update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
-            case _:
-                # Parse in Snowflake
-                stage_path = stage_document(cursor, source_uri=source_uri, local_path=local_path)
-                parse_document(cursor, source_uri=source_uri, stage_path=stage_path, insert=insert)
-        # Store basic document metadata first
-        update_document_metadata(
-            cursor, source_uri=source_uri, modified_at_utc=modified_at_utc, metadata=metadata, insert=insert
-        )
-        # Next generate synthetic metadata
-        generate_document_metadata(cursor, source_uri=source_uri, config=config, insert=insert)
-        # Split the document into chunks
-        chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
+        cursor.execute("begin transaction")
+        try:
+            document_type = local_path.suffix.removeprefix(".").lower()
+            match document_type:
+                case "html" | "txt":
+                    # Upload the contents directly
+                    update_document_text(cursor, source_uri=source_uri, text=local_path.read_text(), insert=insert)
+                case "xls" | "xlsx":
+                    # Convert Excel to HTML
+                    document_html = excel_to_html(local_path)
+                    update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
+                case "doc" | "docx":
+                    # Convert Word to HTML
+                    document_html = word_doc_to_html(local_path)
+                    update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
+                case _:
+                    # Parse in Snowflake
+                    stage_path = stage_document(cursor, source_uri=source_uri, local_path=local_path)
+                    parse_document(cursor, source_uri=source_uri, stage_path=stage_path, insert=insert)
+            # Store basic document metadata first
+            update_document_metadata(
+                cursor, source_uri=source_uri, modified_at_utc=modified_at_utc, metadata=metadata, insert=insert
+            )
+            # Next generate synthetic metadata
+            generate_document_metadata(cursor, source_uri=source_uri, config=config, insert=insert)
+            # Split the document into chunks
+            chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
+            logger.info(f"Processed {source_uri} - Committing Snowflake transaction")
+            cursor.execute("commit")
+        except Exception:
+            logger.error(f"Unable to process {source_uri} - Rolling back Snowflake transaction")
+            cursor.execute("rollback")
+            raise
 
 
 def process_documents(
@@ -364,6 +374,7 @@ def process_documents(
                 metadata,
                 config,
                 insert,
+                logger,
             ): source_uri
             for (source_uri, local_path, modified_at_utc, metadata, insert) in sources
         }

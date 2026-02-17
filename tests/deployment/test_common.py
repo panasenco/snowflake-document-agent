@@ -951,6 +951,63 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
 
 
 @pytest.mark.deployment
+def test_process_document_orphaned_data_bug(snowflake_conn, test_schema, test_config, tmp_path):
+    """
+    Test for orphaned data bug at process_document level: when a single document processing fails,
+    ensure no partial data is left in ANY table (document_text, enhanced_metadata, document_chunks).
+
+    This reproduces the bug where failed documents leave entries in document_text.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    # Create an Excel file disguised as PDF (will fail parsing)
+    xlsx_fixture = Path(__file__).parent.parent / "fixtures" / "multi-worksheet.xlsx"
+    fake_pdf = tmp_path / "fake.pdf"
+    if xlsx_fixture.exists():
+        shutil.copy(xlsx_fixture, fake_pdf)
+    else:
+        # Create fake Excel-like content with PDF extension
+        fake_pdf.write_bytes(b"PK\x03\x04")  # ZIP signature (Excel files are ZIP-based)
+
+    source_uri = "test://orphaned/fake.pdf"
+    modified_time = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    metadata = "test metadata"
+
+    # Try to process the problematic document (should fail)
+    from snowflake_document_agent.common import process_document
+
+    try:
+        process_document(
+            connection=snowflake_conn,
+            source_uri=source_uri,
+            local_path=fake_pdf,
+            modified_at_utc=modified_time,
+            metadata=metadata,
+            config=test_config,
+            insert=True,
+        )
+        assert False, "Expected process_document to raise an exception for fake PDF"
+    except Exception as e:
+        print(f"DEBUG: process_document failed as expected: {type(e).__name__} - {e}")
+
+    # === VERIFY NO ORPHANED DATA ===
+    # The bug is that failed documents leave partial data in some tables but not others
+
+    with snowflake_conn.cursor() as cursor:
+        # Check all tables - should be completely empty for this source_uri
+        tables_to_check = ["document_metadata", "document_text", "enhanced_metadata", "document_chunks"]
+
+        for table in tables_to_check:
+            cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE source_uri = :1", (source_uri,))
+            count = cursor.fetchone()[0]
+            print(f"DEBUG: {table} contains {count} entries for failed document")
+            assert count == 0, f"Failed document should not be in {table}, found {count} entries (ORPHANED DATA BUG)"
+
+    print("✅ Orphaned data test passed - no partial data left from failed process_document!")
+
+
+@pytest.mark.deployment
 def test_delete_documents(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test delete_documents function - should remove documents from all relevant tables.
