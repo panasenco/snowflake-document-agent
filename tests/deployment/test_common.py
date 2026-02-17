@@ -2,7 +2,7 @@ import pytest
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from snowflake.connector import DictCursor
 
 from snowflake_document_agent.common import (
@@ -14,6 +14,9 @@ from snowflake_document_agent.common import (
     chunk_document,
     clear_stage,
     process_documents,
+    process_changed_documents,
+    delete_documents,
+    get_snowflake_documents,
     refresh_search_services,
 )
 
@@ -720,8 +723,6 @@ def test_get_snowflake_documents(snowflake_conn, test_schema, test_config, tmp_p
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
 
-    from snowflake_document_agent.common import get_snowflake_documents, update_document_metadata
-
     # Define test data with different prefixes
     test_documents = [
         ("s3://bucket/folder1/doc1.pdf", datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc), "metadata for doc1"),
@@ -782,15 +783,10 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
     2. Changed documents (insert=False, newer timestamp or different metadata)
     3. Deleted documents (remove from Snowflake)
     4. Unchanged documents (skip processing)
+    5. Call refresh_search_services when there are changes
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
-
-    from snowflake_document_agent.common import (
-        process_changed_documents,
-        update_document_metadata,
-        get_snowflake_documents,
-    )
 
     # Mock downloader that returns real fixture files
     def mock_downloader(source_uri: str) -> Path:
@@ -856,15 +852,22 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
     mock_logger = MagicMock()
 
     # === EXECUTE ===
-    process_changed_documents(
-        current_sources,
-        connection=snowflake_conn,
-        downloader=mock_downloader,
-        prefix=prefix,
-        config=test_config,
-        max_workers=4,
-        logger=mock_logger,
-    )
+    # Mock refresh_search_services to avoid long execution time
+    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+        process_changed_documents(
+            current_sources,
+            connection=snowflake_conn,
+            downloader=mock_downloader,
+            prefix=prefix,
+            config=test_config,
+            max_workers=4,
+            logger=mock_logger,
+        )
+
+        # Verify refresh_search_services was called (there were changes: 1 deleted, 1 updated, 2 new)
+        assert mock_refresh.call_count == 1, (
+            f"Expected refresh_search_services to be called once, got {mock_refresh.call_count}"
+        )
 
     # === VERIFY RESULTS ===
 
@@ -921,7 +924,30 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
     new_doc_logs = [msg for msg in logged_messages if "new" in msg.lower() and ("doc3" in msg or "doc4" in msg)]
     assert len(new_doc_logs) > 0, f"Should log processing of new documents. All logs: {logged_messages}"
 
-    print("✅ process_changed_documents test passed - incremental processing works correctly!")
+    # === TEST NO CHANGES: Process same sources again ===
+    mock_logger.reset_mock()
+
+    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh_no_changes:
+        process_changed_documents(
+            current_sources,  # Same sources as before - no changes
+            connection=snowflake_conn,
+            downloader=mock_downloader,
+            prefix=prefix,
+            config=test_config,
+            max_workers=4,
+            logger=mock_logger,
+        )
+
+        # Verify refresh_search_services was NOT called when no changes
+        assert mock_refresh_no_changes.call_count == 0, (
+            f"Expected refresh_search_services NOT to be called when no changes, got {mock_refresh_no_changes.call_count}"
+        )
+
+    # Verify no errors were logged for no changes
+    no_change_errors = [call.args[0] for call in mock_logger.error.call_args_list]
+    assert len(no_change_errors) == 0, f"Expected no errors when no changes, got: {no_change_errors}"
+
+    print("✅ process_changed_documents test passed - incremental processing and no-change detection work correctly!")
 
 
 @pytest.mark.deployment
@@ -932,14 +958,6 @@ def test_delete_documents(snowflake_conn, test_schema, test_config, tmp_path):
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
-
-    from snowflake_document_agent.common import (
-        delete_documents,
-        update_document_metadata,
-        update_document_text,
-        generate_document_metadata,
-        chunk_document,
-    )
 
     # === SETUP: Create documents in all tables ===
     test_documents = [
