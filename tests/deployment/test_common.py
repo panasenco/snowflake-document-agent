@@ -255,15 +255,16 @@ def test_parse_document_error_handling(snowflake_conn, test_schema, tmp_path):
         assert "parsing failed" in error_msg.lower(), f"Expected parsing error message, got: {error_msg}"
         assert source_uri_empty in error_msg, f"Expected source URI in error message, got: {error_msg}"
 
-        # Test Case 2: Plain text file (not a PDF)
-        text_file = tmp_path / "not_a_pdf.pdf"
-        text_file.write_text("This is just plain text, not a PDF document at all.")
+        # Test Case 2: Excel file disguised as a PDF (should fail parsing)
+        excel_as_pdf = tmp_path / "actually_excel.pdf"
+        excel_fixture = Path(__file__).parent.parent / "fixtures" / "multi-worksheet.xlsx"
+        shutil.copy(excel_fixture, excel_as_pdf)  # Copy Excel file with .pdf extension
 
-        source_uri_text = "test://error/not_a_pdf.pdf"
+        source_uri_text = "test://error/actually_excel.pdf"
         stage_path_text = stage_document(
             cursor=cursor,
             source_uri=source_uri_text,
-            local_path=text_file,
+            local_path=excel_as_pdf,
         )
 
         with pytest.raises(RuntimeError) as exc_info:
