@@ -2,11 +2,15 @@ import argparse
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+from typing import Callable
 
-from .common import DocumentInfo, process_documents
+from .common import process_changed_documents
 
 
-def get_local_documents(root_path: Path, prefix: str) -> dict[str, DocumentInfo]:
+def get_local_documents(root_path: Path, prefix: str) -> dict[str, tuple[datetime, str]]:
+    """Returns a dictionary with source_uris as the keys and (modified_at_utc, "") tuples as the values for all files
+    in the root folder and its subfolders.
+    """
     if not root_path.exists():
         raise RuntimeError(f"Error: Root directory '{root_path}' does not exist.")
     local_documents = {}
@@ -23,8 +27,26 @@ def get_local_documents(root_path: Path, prefix: str) -> dict[str, DocumentInfo]
             source_uri = f"{prefix}://{relative_path.as_posix()}"
             modified_timestamp = local_path.stat().st_mtime
             modified_at_utc = datetime.fromtimestamp(modified_timestamp, tz=timezone.utc)
-            local_documents[source_uri] = DocumentInfo(modified_at_utc=modified_at_utc, local_path=local_path)
+            local_documents[source_uri] = (modified_at_utc, "")
     return local_documents
+
+
+def get_local_downloader(root_path: Path, prefix: str) -> Callable[[str], Path]:
+    """Given a root folder and a prefix, returns a downloader function that returns paths for source_uri's.
+    The downloader function accepts only source_uri's that start with "{prefix}://" and errors otherwise.
+    The downloader function appends the part after the prefix to the root path and returns that path.
+    If the path doesn't exist, the downloader function errors.
+    This function doesn't actually "download" anything obviously but is named this way for consistency with others.
+    """
+
+    def local_downloader(source_uri: str) -> Path:
+        assert source_uri.startswith(f"{prefix}://"), f"URI {source_uri} doesn't begin with required prefix {prefix}"
+        path = root_path / source_uri.removeprefix(f"{prefix}://")
+        assert path.exists(), f"Path {path} for URI {source_uri} doesn't exist"
+        assert path.is_file(), f"Path {path} for URI {source_uri} is not a file"
+        return path
+
+    return local_downloader
 
 
 def main() -> None:
@@ -50,7 +72,10 @@ def main() -> None:
     args = parser.parse_args()
     root_path = Path(args.root_dir)
     local_documents = get_local_documents(root_path=root_path, prefix=args.prefix)
-    process_documents(local_documents, prefix=args.prefix, snowflake_connection_name=args.snowflake_connection)
+    local_downloader = get_local_downloader(root_path=root_path, prefix=args.prefix)
+    process_changed_documents(
+        local_documents, connection=args.snowflake_connection, downloader=local_downloader, prefix=args.prefix
+    )
 
 
 if __name__ == "__main__":
