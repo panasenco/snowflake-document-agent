@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from logging import Logger, getLogger
 from concurrent.futures import as_completed, ThreadPoolExecutor
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import mammoth
 import pandas as pd
@@ -47,12 +47,22 @@ def clear_stage(cursor: SnowflakeCursor) -> None:
 def delete_documents(
     connection: SnowflakeConnection,
     *,
-    deleted_uris: set[str],
+    delete_uris: set[str],
     config: dict[str, Any],
 ) -> None:
     """Batch delete documents.
     Note that document deletion doesn't need to be parallelized.
     """
+    if not delete_uris:
+        return
+    with create_cursor(connection, config) as cursor:
+        # Create a string of placeholders: :1, :2, ..., :N
+        placeholders = ", ".join([f":{i + 1}" for i in range(len(delete_uris))])
+        for table in ALL_TABLES:
+            cursor.execute(
+                f"delete from {table} where source_uri in ({placeholders})",
+                tuple(delete_uris),
+            )
 
 
 def stage_document(
@@ -298,7 +308,7 @@ def process_document(
     insert: bool,
 ) -> None:
     """Process a single document end-to-end."""
-    with connection.cursor() as cursor:
+    with create_cursor(connection, config) as cursor:
         document_type = local_path.suffix.removeprefix(".").lower()
         match document_type:
             case "html" | "txt":
@@ -327,12 +337,13 @@ def process_document(
 
 
 def process_documents(
+    connection: SnowflakeConnection,
     sources: list[tuple[str, Path, datetime, str, bool]],
     *,
-    connection: SnowflakeConnection,
-    config: dict[str, Any] | None = None,
+    config: dict[str, Any],
     max_workers: int = 8,
     logger: Logger = getLogger(),
+    suppress_errors: bool = True,
 ) -> None:
     """Process documents end-to-end in parallel.
     Requires a list of (source_uri, local_path, modified_at_utc, metadata, insert) tuples.
@@ -359,10 +370,13 @@ def process_documents(
         }
     for future in as_completed(futures):
         source_uri = futures[future]
-        try:
+        if suppress_errors:
+            try:
+                future.result()
+            except Exception as err:
+                logger.error(f"Error processing {source_uri}: {type(err).__name__} - {err}")
+        else:
             future.result()
-        except Exception as err:
-            logger.error(f"Error processing {source_uri}: {type(err).__name__} - {err}")
 
 
 def get_snowflake_documents(
@@ -376,10 +390,76 @@ def get_snowflake_documents(
     Filter on source_uri prefixes, e.g. "local" for URIs like "local://path/to/the/file".
     The prefix can also be used to filter for subfolders, e.g. "local://path/to".
     """
-    with connection.cursor() as cursor:
+    with create_cursor(connection, config) as cursor:
         # Query document_metadata table for documents matching the prefix
         cursor.execute(
             "select source_uri, modified_at_utc, metadata from document_metadata where source_uri like :1 || '%'",
             (prefix,),
         )
-        return {source_uri: (modified_at_utc, metadata) for source_uri, modified_at_utc, metadata in cursor}
+        return {
+            source_uri: (modified_at_utc.replace(tzinfo=timezone.utc), metadata)
+            for source_uri, modified_at_utc, metadata in cursor
+        }
+
+
+def refresh_search_services(connection: SnowflakeConnection, config: dict[str, Any], /) -> None:
+    """Make sure the snowflake-document-agent Cortex search services have the latest data."""
+    with create_cursor(connection, config) as cursor:
+        for search_service in ["search_metadata", "search_contents"]:
+            cursor.execute(f"alter cortex search service if exists {search_service} refresh")
+
+
+def process_changed_documents(
+    sources: dict[str, tuple[datetime, str]],
+    *,
+    connection: SnowflakeConnection | str = "default",
+    downloader: Callable[[str], Path],
+    prefix: str,
+    config: dict[str, Any] | None = None,
+    max_workers: int = 8,
+    logger: Logger = getLogger(),
+) -> None:
+    """Process just the documents that have changed since the last ingestion into Snowflake.
+    Accepts a dictionary with source_uri's as keys and (modified_at_utc, metadata) tuples as values.
+    Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
+    Accepts a Snowflake connection as either a connection name (string) or the connection object.
+    Deletes the documents matching the prefix that are only in Snowflake and no longer in the source.
+    Ingests (insert=True) new documents matching the prefix into Snowflake.
+    Reingests (insert=False) documents matching the prefix that have newer modification timestamps or different metadata
+      strings into Snowflake.
+    """
+    if config is None:
+        config = load_config()
+    if isinstance(connection, str):
+        connection = snowflake.connector.connect(connection_name=connection)
+    targets = get_snowflake_documents(connection, prefix=prefix, config=config)
+    source_uris = set(sources)
+    target_uris = set(targets)
+    # Delete the removed documents
+    deleted_uris = target_uris - source_uris
+    for source_uri in deleted_uris:
+        logger.info(f"Deleting document {source_uri} from Snowflake...")
+    delete_documents(connection, delete_uris=deleted_uris, config=config)
+    # Initialize a dict with source_uri's as keys and insert bools as values
+    process_sources = {}
+    for source_uri in source_uris - target_uris:
+        logger.info(f"Ingesting new document {source_uri} into Snowflake...")
+        process_sources[source_uri] = True
+    for source_uri in source_uris & target_uris:
+        if sources[source_uri][0] > targets[source_uri][0]:
+            logger.info(f"Reingesting modified (newer timestamp) document {source_uri} into Snowflake...")
+            process_sources[source_uri] = False
+        elif sources[source_uri][1] != targets[source_uri][1]:
+            logger.info(f"Reingesting modified (changed metadata) document {source_uri} into Snowflake...")
+            process_sources[source_uri] = False
+    # Process the added and modified documents
+    process_documents(
+        connection,
+        [
+            (source_uri, downloader(source_uri), sources[source_uri][0], sources[source_uri][1], insert)
+            for source_uri, insert in process_sources.items()
+        ],
+        config=config,
+        max_workers=max_workers,
+        logger=logger,
+    )
