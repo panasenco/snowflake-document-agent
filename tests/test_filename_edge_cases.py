@@ -5,7 +5,6 @@ from snowflake_document_agent.common import (
     get_snowflake_documents,
     process_documents,
     DocumentInfo,
-    create_cursor,
 )
 
 
@@ -17,7 +16,7 @@ def test_stage_document_with_spaces_integration(snowflake_conn, test_schema, tmp
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
 
-    with create_cursor(snowflake_conn, {}) as cursor:
+    with snowflake_conn.cursor() as cursor:
         # Setup
         filename = "test file with spaces.txt"
         local_file = tmp_path / filename
@@ -65,7 +64,7 @@ def test_stage_document_with_single_quotes_integration(snowflake_conn, test_sche
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
 
-    with create_cursor(snowflake_conn, {}) as cursor:
+    with snowflake_conn.cursor() as cursor:
         # Setup
         filename = "test'file'with'quotes.txt"
         local_file = tmp_path / filename
@@ -159,7 +158,7 @@ def test_process_documents_with_tricky_filenames(snowflake_conn, test_schema, tm
         # process_documents normally handles deletes if we passed empty sources, but let's be explicit
         delete_documents(snowflake_conn, deleted_uris={uri1, uri2}, config={})
 
-        with create_cursor(snowflake_conn, {}) as cursor:
+        with snowflake_conn.cursor() as cursor:
             try:
                 cursor.execute("REMOVE '@documents/doc with spaces.txt'")
                 cursor.execute("REMOVE '@documents/doc''s_file.txt'")

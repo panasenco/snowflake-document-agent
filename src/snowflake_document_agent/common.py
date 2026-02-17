@@ -30,13 +30,12 @@ def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
     return config.get("env", {})
 
 
-def create_cursor(connection: SnowflakeConnection, config: dict[str, Any], /) -> SnowflakeCursor:
-    """Create a Snowflake cursor with the configured context set."""
-    cursor = connection.cursor()
-    for attribute in ["role", "warehouse", "database", "schema"]:
-        if attribute in config:
-            cursor.execute(f"use {attribute} {config[attribute]}")
-    return cursor
+def configure_connection(connection: SnowflakeConnection, config: dict[str, Any], /) -> None:
+    """Update the role/warehouse/database/schema in the Snowflake connection from the config dict."""
+    with connection.cursor() as cursor:
+        for attribute in ["role", "warehouse", "database", "schema"]:
+            if attribute in config:
+                cursor.execute(f"use {attribute} {config[attribute]}")
 
 
 def clear_stage(cursor: SnowflakeCursor) -> None:
@@ -55,7 +54,7 @@ def delete_documents(
     """
     if not delete_uris:
         return
-    with create_cursor(connection, config) as cursor:
+    with connection.cursor() as cursor:
         # Create a string of placeholders: :1, :2, ..., :N
         placeholders = ", ".join([f":{i + 1}" for i in range(len(delete_uris))])
         for table in ALL_TABLES:
@@ -308,7 +307,7 @@ def process_document(
     insert: bool,
 ) -> None:
     """Process a single document end-to-end."""
-    with create_cursor(connection, config) as cursor:
+    with connection.cursor() as cursor:
         document_type = local_path.suffix.removeprefix(".").lower()
         match document_type:
             case "html" | "txt":
@@ -390,7 +389,7 @@ def get_snowflake_documents(
     Filter on source_uri prefixes, e.g. "local" for URIs like "local://path/to/the/file".
     The prefix can also be used to filter for subfolders, e.g. "local://path/to".
     """
-    with create_cursor(connection, config) as cursor:
+    with connection.cursor() as cursor:
         # Query document_metadata table for documents matching the prefix
         cursor.execute(
             "select source_uri, modified_at_utc, metadata from document_metadata where source_uri like :1 || '%'",
@@ -404,7 +403,7 @@ def get_snowflake_documents(
 
 def refresh_search_services(connection: SnowflakeConnection, config: dict[str, Any], /) -> None:
     """Make sure the snowflake-document-agent Cortex search services have the latest data."""
-    with create_cursor(connection, config) as cursor:
+    with connection.cursor() as cursor:
         for search_service in ["search_metadata", "search_contents"]:
             cursor.execute(f"alter cortex search service if exists {search_service} refresh")
 
@@ -432,6 +431,7 @@ def process_changed_documents(
         config = load_config()
     if isinstance(connection, str):
         connection = snowflake.connector.connect(connection_name=connection)
+    configure_connection(connection, config)
     targets = get_snowflake_documents(connection, prefix=prefix, config=config)
     source_uris = set(sources)
     target_uris = set(targets)
