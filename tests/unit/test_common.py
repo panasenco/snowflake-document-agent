@@ -2,7 +2,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from snowflake_document_agent.common import word_doc_to_html, excel_to_html, process_document, DocumentInfo
+from snowflake_document_agent.common import word_doc_to_html, excel_to_html, process_document
 
 
 def test_word_doc_to_html_basic():
@@ -75,12 +75,9 @@ def test_process_document_error(mock_connect, tmp_path):
     result = process_document(
         connection=mock_connect,
         source_uri="test://error/does_not_exist.txt",
-        source_info=DocumentInfo(
-            modified_at_utc=datetime.now(timezone.utc),
-            local_path=nonexistent_file,  # This file doesn't exist
-            metadata='{"type": "error_test"}',
-        ),
-        prefix="test://error/",
+        local_path=nonexistent_file,  # This file doesn't exist
+        modified_at_utc=datetime.now(timezone.utc),
+        metadata='{"type": "error_test"}',
         config={"test": "config"},
         insert=True,
     )
@@ -88,3 +85,65 @@ def test_process_document_error(mock_connect, tmp_path):
     # Verify that an exception object is returned instead of raised
     assert isinstance(result, Exception), f"Expected exception object, got {type(result)}: {result}"
     assert isinstance(result, FileNotFoundError), f"Expected FileNotFoundError, got {type(result)}"
+
+
+def test_process_document_uses_create_cursor(tmp_path):
+    """
+    Unit test to verify process_document uses create_cursor() instead of connection.cursor() directly.
+    """
+    from unittest.mock import Mock, patch, MagicMock
+    import snowflake_document_agent.common as common_module
+
+    # Create a test file
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("Test content")
+
+    # Mock connection and create_cursor
+    mock_connection = Mock()
+    mock_cursor = MagicMock()
+
+    # Track calls to create_cursor
+    create_cursor_calls = []
+
+    def mock_create_cursor(connection, config):
+        create_cursor_calls.append((connection, config))
+        return mock_cursor
+
+    # Mock cursor enter/exit for context manager
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+
+    # Mock connection.cursor() to also return the mock cursor (this is what's actually being called)
+    mock_connection.cursor.return_value = mock_cursor
+
+    # Mock all the functions that process_document calls
+    with (
+        patch.object(common_module, "create_cursor", side_effect=mock_create_cursor),
+        patch.object(common_module, "update_document_metadata"),
+        patch.object(common_module, "update_document_text"),
+        patch.object(common_module, "generate_document_metadata"),
+        patch.object(common_module, "chunk_document"),
+    ):
+        # Call process_document
+        common_module.process_document(
+            connection=mock_connection,
+            source_uri="test://unit/test.txt",
+            local_path=test_file,
+            modified_at_utc=datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+            metadata="test metadata",
+            config={"role": "test_role", "database": "test_db"},
+            insert=True,
+        )
+
+        # Verify create_cursor was called
+        assert len(create_cursor_calls) == 1, (
+            f"Expected create_cursor to be called once, got {len(create_cursor_calls)} calls"
+        )
+
+        # Verify the parameters passed to create_cursor
+        connection_arg, config_arg = create_cursor_calls[0]
+        assert connection_arg is mock_connection, "create_cursor should be called with the connection parameter"
+        assert config_arg["role"] == "test_role", "create_cursor should be called with the config parameter"
+        assert config_arg["database"] == "test_db", "create_cursor should receive the config settings"
+
+        print("✅ process_document correctly uses create_cursor() instead of connection.cursor()")
