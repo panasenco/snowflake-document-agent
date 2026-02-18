@@ -1,15 +1,32 @@
+"""OpenText document ingestion for Snowflake Document Agent.
+
+This module provides functionality to discover and ingest documents from OpenText
+into the Snowflake Document Agent pipeline, with on-demand downloading capabilities.
+"""
+
 import argparse
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 import logging
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import tempfile
 from typing import Any
 
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
+from .common import DocumentInfoProtocol
+
 logger = logging.getLogger(__name__)
+
+
+class HttpMethod(Enum):
+    """Supported HTTP methods for OpenText API calls."""
+
+    GET = "GET"
+    POST = "POST"
 
 
 def is_retriable_requests_error(e: Exception) -> bool:
@@ -21,7 +38,7 @@ def is_retriable_requests_error(e: Exception) -> bool:
     return True
 
 
-class OpenTextDownloader:
+class OpenTextClient:
     """Simple HTTP client for OpenText API with authentication."""
 
     def __init__(
@@ -66,7 +83,7 @@ class OpenTextDownloader:
             "client_secret": self.client_secret,
         }
 
-        auth_response = self.call("POST", "opentext/cloud/v1/auth", headers={}, data=auth_data)
+        auth_response = self.call(HttpMethod.POST, "opentext/cloud/v1/auth", headers={}, data=auth_data)
         token_dict = auth_response.json()
         access_token = token_dict["access_token"]
 
@@ -86,7 +103,7 @@ class OpenTextDownloader:
     )
     def call(
         self,
-        method: str,
+        method: HttpMethod,
         path: str,
         *,
         headers: dict[str, str] | None = None,
@@ -96,9 +113,9 @@ class OpenTextDownloader:
         api_url = f"{self.api_prefix}/{path}"
         request_headers = headers if headers is not None else self.headers
 
-        if method == "GET":
+        if method == HttpMethod.GET:
             response = requests.get(api_url, headers=request_headers)
-        elif method == "POST":
+        elif method == HttpMethod.POST:
             response = requests.post(api_url, headers=request_headers, data=data)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
@@ -106,14 +123,26 @@ class OpenTextDownloader:
         response.raise_for_status()
         return response
 
-    def __call__(self, source_uri: str) -> Path:
-        """Downloads an OpenText document and returns its local path."""
+
+@dataclass
+class OpenTextDocumentInfo(DocumentInfoProtocol):
+    """DocumentInfo for OpenText documents with on-demand downloading."""
+
+    modified_at_utc: datetime
+    opentext_id: int
+    extension: str
+    opentext_api_client: OpenTextClient
+    metadata: str = ""
+
+    @property
+    def local_path(self) -> Path:
+        """Download document from OpenText on-demand and return local path."""
         # Call OpenText API to get content
-        response = self.call("GET", f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
+        response = self.opentext_api_client.call(HttpMethod.GET, f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
+
         # Write content to temporary file with opentext_id prefix and correct extension
-        source_uri_path = PurePosixPath(source_uri)
         temp_file = tempfile.NamedTemporaryFile(
-            delete=False, prefix=f"{source_uri_path.stem}_", suffix=source_uri_path.suffix
+            delete=False, prefix=f"{self.opentext_id}_", suffix=f".{self.extension}"
         )
         temp_file.write(response.content)
         temp_file.close()
@@ -122,71 +151,81 @@ class OpenTextDownloader:
 
 
 def get_opentext_documents(
-    downloader: OpenTextDownloader,
-    *,
-    opentext_nodes: list[int],
-    prefix: str,
-) -> dict[str, tuple[datetime, str]]:
+    client: OpenTextClient, *, opentext_nodes: list[int], prefix: str
+) -> dict[str, OpenTextDocumentInfo]:
     """Discover OpenText documents from specified node IDs.
 
     Args:
-        downloader: OpenTextDownloader for making API calls
+        client: OpenTextClient for making API calls
         opentext_nodes: List of OpenText node IDs to process
-        prefix: URI prefix for the documents, optionally including parent paths (e.g., 'opentext://', 'ot://parent/path/')
+        prefix: URI scheme prefix for the documents (e.g., 'opentext')
 
     Returns:
-        Dictionary mapping source URIs to (modified_at_utc, metadata) tuples
+        Dictionary mapping source URIs to OpenTextDocumentInfo objects
     """
     result = {}
 
     for node_id in opentext_nodes:
         # Get node info from OpenText API
-        response = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
+        response = client.call(HttpMethod.GET, f"opentext/cloud/v1/nodes/{node_id}")
         node_data = response.json()["data"]
+
         node_type = node_data["type_name"]
-        match node_type:
-            case "Folder":
-                # Get child IDs
-                children_response = downloader.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
-                children_data = children_response.json()["results"]
-                child_ids = [child["data"]["properties"]["id"] for child in children_data]
-                # Recursively process children
-                child_documents = get_opentext_documents(
-                    downloader, opentext_nodes=child_ids, prefix=f"{prefix}{node_data['name']}/"
+
+        if node_type == "Document":
+            # Handle individual document
+            modify_date_str = node_data["modify_date"]
+            modify_date = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
+
+            # Get file extension from versions API (OpenText API quirk)
+            versions_response = client.call(HttpMethod.GET, f"opentext/cloud/v1/nodes/{node_id}/versions/0")
+            extension = versions_response.json()["data"]["file_type"].lower()
+
+            # Create source URI with extension
+            source_uri = f"{prefix}://{node_id}.{extension}"
+
+            # Create OpenTextDocumentInfo object with extension
+            doc_info = OpenTextDocumentInfo(
+                modified_at_utc=modify_date, opentext_id=node_id, extension=extension, opentext_api_client=client
+            )
+
+            result[source_uri] = doc_info
+
+        elif node_type == "Folder":
+            # Handle folder - get children and process recursively
+            children_response = client.call(HttpMethod.GET, f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
+            children_data = children_response.json()["results"]
+
+            # Extract child IDs
+            child_ids = [child["data"]["properties"]["id"] for child in children_data]
+
+            # Recursively process children
+            child_documents = get_opentext_documents(client, opentext_nodes=child_ids, prefix=prefix)
+            result.update(child_documents)
+
+        elif node_type == "Shortcut":
+            # Handle shortcut - follow original_id but preserve shortcut name
+            original_id = node_data["original_id"]
+            modify_date_str = node_data["modify_date"]
+            modify_date = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
+
+            # Get the original document to access its content
+            original_documents = get_opentext_documents(client, opentext_nodes=[original_id], prefix=prefix)
+
+            # Update the result with shortcut name instead of original name
+            for original_uri, doc_info in original_documents.items():
+                # Create new URI using shortcut name with original extension
+                shortcut_uri = f"{prefix}://{doc_info.opentext_id}.{doc_info.extension}"
+
+                # Create new DocumentInfo with original document ID but shortcut name and date
+                shortcut_doc_info = OpenTextDocumentInfo(
+                    modified_at_utc=modify_date,
+                    opentext_id=doc_info.opentext_id,  # Keep original document ID for content access
+                    extension=doc_info.extension,  # Use original document's extension
+                    opentext_api_client=client,
                 )
-                result.update(child_documents)
-            case "Document":
-                # Handle individual document
-                modify_date_str = node_data["modify_date"]
-                modified_at_utc = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
-                # Get file extension from versions API (OpenText API quirk)
-                versions_response = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0")
-                extension = versions_response.json()["data"]["file_type"].lower()
-                # Create source URI with extension
-                source_uri = f"{prefix}{node_data['name']}.{extension}"
-                result[source_uri] = (modified_at_utc, "")
-            case "Shortcut":
-                # Get file extension from versions API (OpenText API quirk)
-                versions_response = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0")
-                extension = versions_response.json()["data"]["file_type"].lower()
-                # Handle shortcut - follow original_id but preserve shortcut name
-                original_id = node_data["original_id"]
-                # Get the linked document(s)
-                original_documents = get_opentext_documents(downloader, opentext_nodes=[original_id], prefix="")
-                # Update the result with shortcut name instead of original name
-                for original_uri, original_info in original_documents.items():
-                    # Replace the first part of the original with the shortcut name
-                    # If linked to a document, this will replace the full document name
-                    # If linked to a folder, this will replace the top folder name
-                    uri_parts = original_uri.split("/")
-                    if extension:
-                        uri_parts[0] = f"{node_data['name']}.{extension}"
-                    else:
-                        uri_parts[0] = node_data["name"]
-                    # Construct full URI
-                    source_uri = f"{prefix}{'/'.join(uri_parts)}"
-                    # Save the original modification time and metadata
-                    result[source_uri] = original_info
+
+                result[shortcut_uri] = shortcut_doc_info
 
     return result
 
