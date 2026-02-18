@@ -308,7 +308,7 @@ def chunk_document(
 def process_document(
     connection: SnowflakeConnection | str,
     source_uri: str,
-    local_path: Path,
+    downloader: Callable[[str], Path],
     modified_at_utc: datetime,
     metadata: str,
     config: dict[str, Any],
@@ -316,6 +316,10 @@ def process_document(
     logger: Logger = getLogger(),
 ) -> str | None:
     """Process a single document end-to-end."""
+    try:
+        local_path = downloader(source_uri)
+    except Exception as err:
+        return f"Error downloading {source_uri}: {type(err).__name__} - {err}"
     configured_connection = configure_connection(connection, config)
     with configured_connection.cursor() as cursor:
         cursor.execute("begin transaction")
@@ -356,21 +360,23 @@ def process_document(
 
 def process_documents(
     connection: SnowflakeConnection | str,
-    sources: list[tuple[str, Path, datetime, str, bool]],
+    sources: list[tuple[str, Callable[[str], Path], datetime, str, bool]],
     *,
     config: dict[str, Any],
     max_workers: int = 1,
     logger: Logger = getLogger(),
     suppress_errors: bool = True,
-) -> None:
+) -> bool:
     """Process documents end-to-end in parallel.
-    Requires a list of (source_uri, local_path, modified_at_utc, metadata, insert) tuples.
+    Returns True if any documents were successfully processed, False otherwise.
+    Requires a list of (source_uri, downloader, modified_at_utc, metadata, insert) tuples.
     Accepts a Snowflake connection as either a direct connection object or a string connection name.
     Setting max_workers > 1 requires the connection to be a string name rather than a SnowflakeConnection object.
     When max_workers > 1 and the connection is a string connection name, uses multiprocessing to parallelize the load.
     Displays a progress bar.
     Doesn't crash when a document fails to process, but displays detailed information about the error.
     """
+    any_processed = False
     if max_workers > 1:
         if isinstance(connection, SnowflakeConnection):
             raise ValueError("The connection parameter must be a string connection name when max_workers > 1")
@@ -382,34 +388,38 @@ def process_documents(
                     (
                         connection,
                         source_uri,
-                        local_path,
+                        downloader,
                         modified_at_utc,
                         metadata,
                         config,
                         insert,
-                        logger,
                     )
-                    for (source_uri, local_path, modified_at_utc, metadata, insert) in sources
+                    for (source_uri, downloader, modified_at_utc, metadata, insert) in sources
                 ],
             )
         for result in results:
-            if result:
+            if result is None:
+                any_processed = True
+            else:
                 logger.error(result)
     else:
         # Process sequentially directly
-        for source_uri, local_path, modified_at_utc, metadata, insert in sources:
+        for source_uri, downloader, modified_at_utc, metadata, insert in sources:
             result = process_document(
                 connection,
                 source_uri,
-                local_path,
+                downloader,
                 modified_at_utc,
                 metadata,
                 config,
                 insert,
                 logger,
             )
-            if result:
+            if result is None:
+                any_processed = True
+            else:
                 logger.error(result)
+    return any_processed
 
 
 def get_snowflake_documents(
@@ -498,16 +508,16 @@ def process_changed_documents(
         except Exception as err:
             logger.error(f"Failed to download {source_uri}: {type(err).__name__} - {err}")
     # Process the added and modified documents
-    process_documents(
+    any_processed = process_documents(
         connection,
         [
-            (source_uri, local_path, sources[source_uri][0], sources[source_uri][1], source_inserts[source_uri])
-            for source_uri, local_path in source_files.items()
+            (source_uri, downloader, sources[source_uri][0], sources[source_uri][1], insert)
+            for source_uri, insert in source_inserts.items()
         ],
         config=config,
         max_workers=max_workers,
         logger=logger,
     )
     # Make sure Cortex search services reflect the changes
-    if deleted_uris or source_files:
+    if deleted_uris or any_processed:
         refresh_search_services(configured_connection)
