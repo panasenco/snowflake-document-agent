@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from logging import Logger, getLogger
-from concurrent.futures import as_completed, ThreadPoolExecutor
+from multiprocessing import Pool
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -30,13 +30,20 @@ def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
     return config.get("env", {})
 
 
-def configure_connection(connection: SnowflakeConnection, config: dict[str, Any], /) -> None:
-    """Update the role/warehouse/database/schema in the Snowflake connection from the config dict."""
+def configure_connection(connection: SnowflakeConnection | str, config: dict[str, Any], /) -> SnowflakeConnection:
+    """Returns a properly configured Snowflake connection object.
+    If the connection is a string, treats it as a Snowflake connection_name and creates a SnowflakeConnection object.
+    Either way, updates the role/warehouse/database/schema in the Snowflake connection from the config dict."""
+    if isinstance(connection, str):
+        connection = snowflake.connector.connect(connection_name=connection)
+    # Disable autocommit for rollback ability
+    connection.autocommit = False
+    # Set the config attributes
     with connection.cursor() as cursor:
         for attribute in ["role", "warehouse", "database", "schema"]:
             if attribute in config:
                 cursor.execute(f"use {attribute} {config[attribute]}")
-        cursor.execute("alter session set autocommit = false")
+    return connection
 
 
 def clear_stage(cursor: SnowflakeCursor) -> None:
@@ -45,17 +52,17 @@ def clear_stage(cursor: SnowflakeCursor) -> None:
 
 
 def delete_documents(
-    connection: SnowflakeConnection,
+    configured_connection: SnowflakeConnection,
     *,
     delete_uris: set[str],
-    config: dict[str, Any],
 ) -> None:
     """Batch delete documents.
+    Accepts an already-configured (role, warehouse, schema set) connection object.
     Note that document deletion doesn't need to be parallelized.
     """
     if not delete_uris:
         return
-    with connection.cursor() as cursor:
+    with configured_connection.cursor() as cursor:
         # Create a string of placeholders: :1, :2, ..., :N
         placeholders = ", ".join([f":{i + 1}" for i in range(len(delete_uris))])
         for table in ALL_TABLES:
@@ -299,7 +306,7 @@ def chunk_document(
 
 
 def process_document(
-    connection: SnowflakeConnection,
+    connection: SnowflakeConnection | str,
     source_uri: str,
     local_path: Path,
     modified_at_utc: datetime,
@@ -307,9 +314,10 @@ def process_document(
     config: dict[str, Any],
     insert: bool,
     logger: Logger = getLogger(),
-) -> None:
+) -> str | None:
     """Process a single document end-to-end."""
-    with connection.cursor() as cursor:
+    configured_connection = configure_connection(connection, config)
+    with configured_connection.cursor() as cursor:
         cursor.execute("begin transaction")
         try:
             document_type = local_path.suffix.removeprefix(".").lower()
@@ -339,34 +347,58 @@ def process_document(
             chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
             logger.info(f"Processed {source_uri} - Committing Snowflake transaction")
             cursor.execute("commit")
-        except Exception:
+            return None
+        except Exception as err:
             logger.error(f"Unable to process {source_uri} - Rolling back Snowflake transaction")
             cursor.execute("rollback")
-            raise
+            return f"Error processing {source_uri}: {type(err).__name__} - {err}"
 
 
 def process_documents(
-    connection: SnowflakeConnection,
+    connection: SnowflakeConnection | str,
     sources: list[tuple[str, Path, datetime, str, bool]],
     *,
     config: dict[str, Any],
-    max_workers: int = 8,
+    max_workers: int = 1,
     logger: Logger = getLogger(),
     suppress_errors: bool = True,
 ) -> None:
     """Process documents end-to-end in parallel.
     Requires a list of (source_uri, local_path, modified_at_utc, metadata, insert) tuples.
-    Accepts a SnowflakeConnection object.
-    Uses multithreading to reuse the connection object.
-    Without multithreading, restrictive corporate environments that only allow browser based auth would open an SSO
-    browser tab for each document processed.
+    Accepts a Snowflake connection as either a direct connection object or a string connection name.
+    Setting max_workers > 1 requires the connection to be a string name rather than a SnowflakeConnection object.
+    When max_workers > 1 and the connection is a string connection name, uses multiprocessing to parallelize the load.
     Displays a progress bar.
     Doesn't crash when a document fails to process, but displays detailed information about the error.
     """
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
+    if max_workers > 1:
+        if isinstance(connection, SnowflakeConnection):
+            raise ValueError("The connection parameter must be a string connection name when max_workers > 1")
+        # Process in parallel with multiprocessing
+        with Pool(processes=max_workers) as pool:
+            results = pool.starmap(
                 process_document,
+                [
+                    (
+                        connection,
+                        source_uri,
+                        local_path,
+                        modified_at_utc,
+                        metadata,
+                        config,
+                        insert,
+                        logger,
+                    )
+                    for (source_uri, local_path, modified_at_utc, metadata, insert) in sources
+                ],
+            )
+        for result in results:
+            if result:
+                logger.error(result)
+    else:
+        # Process sequentially directly
+        for source_uri, local_path, modified_at_utc, metadata, insert in sources:
+            result = process_document(
                 connection,
                 source_uri,
                 local_path,
@@ -375,32 +407,22 @@ def process_documents(
                 config,
                 insert,
                 logger,
-            ): source_uri
-            for (source_uri, local_path, modified_at_utc, metadata, insert) in sources
-        }
-    for future in as_completed(futures):
-        source_uri = futures[future]
-        if suppress_errors:
-            try:
-                future.result()
-            except Exception as err:
-                logger.error(f"Error processing {source_uri}: {type(err).__name__} - {err}")
-        else:
-            future.result()
+            )
+            if result:
+                logger.error(result)
 
 
 def get_snowflake_documents(
-    connection: snowflake.connector.SnowflakeConnection,
-    *,
+    configured_connection: SnowflakeConnection,
     prefix: str,
-    config: dict[str, Any],
 ) -> dict[str, tuple[datetime, str]]:
     """Get information about the documents currently in Snowflake.
+    Accepts an already-configured (role, warehouse, schema set) connection object.
     Returns a dictionary with source_uri's as keys and (modified_at_utc, metadata) tuples as values.
     Filter on source_uri prefixes, e.g. "local" for URIs like "local://path/to/the/file".
     The prefix can also be used to filter for subfolders, e.g. "local://path/to".
     """
-    with connection.cursor() as cursor:
+    with configured_connection.cursor() as cursor:
         # Query document_metadata table for documents matching the prefix
         cursor.execute(
             "select source_uri, modified_at_utc, metadata from document_metadata where source_uri like :1 || '%'",
@@ -412,11 +434,18 @@ def get_snowflake_documents(
         }
 
 
-def refresh_search_services(connection: SnowflakeConnection, config: dict[str, Any], /) -> None:
-    """Make sure the snowflake-document-agent Cortex search services have the latest data."""
-    with connection.cursor() as cursor:
-        for search_service in ["search_metadata", "search_contents"]:
-            cursor.execute(f"alter cortex search service if exists {search_service} refresh")
+def refresh_search_services(configured_connection: SnowflakeConnection) -> None:
+    """Make sure the snowflake-document-agent Cortex search services have the latest data.
+    Accepts an already-configured (role, warehouse, schema set) connection object.
+    """
+    # Need to temporarily enable autocommit for Cortex search service refresh
+    configured_connection.autocommit = True
+    try:
+        with configured_connection.cursor() as cursor:
+            for search_service in ["search_metadata", "search_contents"]:
+                cursor.execute(f"alter cortex search service if exists {search_service} refresh")
+    finally:
+        configured_connection.autocommit = False
 
 
 def process_changed_documents(
@@ -440,17 +469,15 @@ def process_changed_documents(
     """
     if config is None:
         config = load_config()
-    if isinstance(connection, str):
-        connection = snowflake.connector.connect(connection_name=connection)
-    configure_connection(connection, config)
-    targets = get_snowflake_documents(connection, prefix=prefix, config=config)
+    configured_connection = configure_connection(connection, config)
+    targets = get_snowflake_documents(configured_connection, prefix)
     source_uris = set(sources)
     target_uris = set(targets)
     # Delete the removed documents
     deleted_uris = target_uris - source_uris
     for source_uri in deleted_uris:
         logger.info(f"Deleting document {source_uri} from Snowflake...")
-    delete_documents(connection, delete_uris=deleted_uris, config=config)
+    delete_documents(configured_connection, delete_uris=deleted_uris)
     # Initialize a dict with source_uri's as keys and insert bools as values
     source_inserts = {}
     for source_uri in source_uris - target_uris:
@@ -483,4 +510,4 @@ def process_changed_documents(
     )
     # Make sure Cortex search services reflect the changes
     if deleted_uris or source_files:
-        refresh_search_services(connection, config)
+        refresh_search_services(configured_connection)
