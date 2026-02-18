@@ -594,7 +594,7 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
         sources=sources,
         connection=snowflake_conn,  # Pass connection object directly
         config=test_config,
-        max_workers=8,  # Use real multithreading
+        max_workers=1,  # Use sequential processing for testing
         logger=mock_logger,
     )
 
@@ -605,8 +605,10 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     for i, error in enumerate(logged_errors):
         print(f"  {i + 1}. {error}")
 
-    # Should have logged errors for the 3 failing documents
-    assert mock_logger.error.call_count == 3, f"Expected 3 error logs, got {mock_logger.error.call_count}"
+    # Should have logged errors for the 3 failing documents (now with transaction rollbacks, expect double)
+    assert mock_logger.error.call_count == 6, (
+        f"Expected 6 error logs (rollback + error for each failure), got {mock_logger.error.call_count}"
+    )
 
     # Verify each expected failure was logged with source URI
     expected_failures = [
@@ -739,7 +741,7 @@ def test_get_snowflake_documents(snowflake_conn, test_schema, test_config, tmp_p
             )
 
     # Test 1: Get documents with "s3://bucket/folder1/" prefix
-    result = get_snowflake_documents(snowflake_conn, prefix="s3://bucket/folder1/", config=test_config)
+    result = get_snowflake_documents(snowflake_conn, prefix="s3://bucket/folder1/")
 
     assert isinstance(result, dict), "Should return a dictionary"
     assert len(result) == 2, f"Expected 2 documents with prefix 's3://bucket/folder1/', got {len(result)}"
@@ -766,11 +768,11 @@ def test_get_snowflake_documents(snowflake_conn, test_schema, test_config, tmp_p
     assert metadata == "metadata for doc1", f"Expected 'metadata for doc1', got '{metadata}'"
 
     # Test 3: Get documents with "s3://bucket/" prefix (should get folder1 and folder2)
-    result_broad = get_snowflake_documents(snowflake_conn, prefix="s3://bucket/", config=test_config)
+    result_broad = get_snowflake_documents(snowflake_conn, prefix="s3://bucket/")
     assert len(result_broad) == 3, f"Expected 3 documents with prefix 's3://bucket/', got {len(result_broad)}"
 
     # Test 4: Get documents with non-existent prefix
-    result_empty = get_snowflake_documents(snowflake_conn, prefix="nonexistent://", config=test_config)
+    result_empty = get_snowflake_documents(snowflake_conn, prefix="nonexistent://")
     assert len(result_empty) == 0, f"Expected 0 documents with non-existent prefix, got {len(result_empty)}"
 
 
@@ -860,7 +862,7 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
             downloader=mock_downloader,
             prefix=prefix,
             config=test_config,
-            max_workers=4,
+            max_workers=1,
             logger=mock_logger,
         )
 
@@ -882,7 +884,7 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
     print("=== END LOGGED MESSAGES ===\n")
 
     # Get final state from Snowflake
-    final_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, config=test_config)
+    final_docs = get_snowflake_documents(snowflake_conn, prefix=prefix)
 
     # Should have 4 documents (doc1, doc2, doc3, doc4) - old_doc should be deleted
     assert len(final_docs) == 4, (
@@ -934,7 +936,7 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
             downloader=mock_downloader,
             prefix=prefix,
             config=test_config,
-            max_workers=4,
+            max_workers=1,
             logger=mock_logger,
         )
 
@@ -1084,7 +1086,7 @@ def test_delete_documents(snowflake_conn, test_schema, test_config, tmp_path):
 
     try:
         # Call delete_documents with empty set - should make no SQL calls
-        delete_documents(connection=snowflake_conn, delete_uris=set(), config=test_config)
+        delete_documents(snowflake_conn, delete_uris=set())
 
         # Verify no SQL calls were made for empty delete
         empty_delete_calls = len(sql_calls)
@@ -1102,7 +1104,7 @@ def test_delete_documents(snowflake_conn, test_schema, test_config, tmp_path):
         "test://delete/delete2.docx",
     }
 
-    delete_documents(connection=snowflake_conn, delete_uris=uris_to_delete, config=test_config)
+    delete_documents(snowflake_conn, delete_uris=uris_to_delete)
 
     # === VERIFY RESULTS ===
     with snowflake_conn.cursor() as cursor:
@@ -1216,7 +1218,7 @@ def test_refresh_search_services(snowflake_conn, test_schema, test_config, tmp_p
         pytest.skip("No search services available for testing")
 
     # === EXECUTE REFRESH ===
-    refresh_search_services(snowflake_conn, test_config)
+    refresh_search_services(snowflake_conn)
 
     # === VERIFY REFRESH OCCURRED ===
     refreshed_services = 0

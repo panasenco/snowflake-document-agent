@@ -88,6 +88,7 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
             downloader=downloader,
             prefix="local",
             config=test_config,
+            max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
         )
 
@@ -97,8 +98,9 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         for i, error in enumerate(logged_errors):
             print(f"  {i + 1}. {error}")
 
-        # Should have errors for bad extension and fake PDF
-        expected_initial_errors = 2
+        # Should have errors for bad extension and fake PDF (2 documents × 2 messages each = 4 total)
+        # Each failed document logs both rollback notice + detailed error
+        expected_initial_errors = 4
         assert mock_logger.error.call_count == expected_initial_errors, (
             f"Expected {expected_initial_errors} error logs in round 1, got {mock_logger.error.call_count}"
         )
@@ -156,6 +158,7 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
             downloader=updated_downloader,
             prefix="local",
             config=test_config,
+            max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
         )
 
@@ -166,8 +169,9 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
             print(f"  {i + 1}. {error}")
 
         # Should have errors for fake PDF (still there) and missing race condition file
-        # The race condition file should now be handled gracefully and logged as an error
-        expected_round2_errors = 2
+        # Race condition: 1 download failure message
+        # Fake PDF: 2 processing failure messages (rollback + detailed error)
+        expected_round2_errors = 3
         assert mock_logger.error.call_count == expected_round2_errors, (
             f"Expected {expected_round2_errors} error logs in round 2, got {mock_logger.error.call_count}"
         )
@@ -275,6 +279,7 @@ def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_
             downloader=downloader,
             prefix="local",
             config=test_config,
+            max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
         )
 
@@ -296,6 +301,7 @@ def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_
             downloader=same_downloader,
             prefix="local",
             config=test_config,
+            max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
         )
 
