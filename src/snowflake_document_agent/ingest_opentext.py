@@ -1,10 +1,10 @@
 import argparse
-from datetime import datetime
 import logging
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import tempfile
 from typing import Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
@@ -108,13 +108,12 @@ class OpenTextDownloader:
 
     def __call__(self, source_uri: str) -> Path:
         """Downloads an OpenText document and returns its local path."""
+        # The 'netloc' part of the URI is of the format [OpenText node id].[extension]
+        opentext_id, extension = urlsplit(source_uri).netloc.split(".", 1)
         # Call OpenText API to get content
-        response = self.call("GET", f"opentext/cloud/v1/nodes/{self.opentext_id}/content")
+        response = self.call("GET", f"opentext/cloud/v1/nodes/{opentext_id}/content")
         # Write content to temporary file with opentext_id prefix and correct extension
-        source_uri_path = PurePosixPath(source_uri)
-        temp_file = tempfile.NamedTemporaryFile(
-            delete=False, prefix=f"{source_uri_path.stem}_", suffix=source_uri_path.suffix
-        )
+        temp_file = tempfile.NamedTemporaryFile(delete=False, prefix=f"{opentext_id}_", suffix=f".{extension}")
         temp_file.write(response.content)
         temp_file.close()
 
@@ -125,17 +124,17 @@ def get_opentext_documents(
     downloader: OpenTextDownloader,
     *,
     opentext_nodes: list[int],
-    prefix: str,
-) -> dict[str, tuple[datetime, str]]:
+    parents: list[str] = [],
+) -> dict[str, str]:
     """Discover OpenText documents from specified node IDs.
 
     Args:
         downloader: OpenTextDownloader for making API calls
         opentext_nodes: List of OpenText node IDs to process
-        prefix: URI prefix for the documents, optionally including parent paths (e.g., 'opentext://', 'ot://parent/path/')
+        parents: List of parent folders to construct a display_name containing all the parent folders
 
     Returns:
-        Dictionary mapping source URIs to (modified_at_utc, metadata) tuples
+        Dictionary mapping source URIs to display_name strings
     """
     result = {}
 
@@ -152,19 +151,24 @@ def get_opentext_documents(
                 child_ids = [child["data"]["properties"]["id"] for child in children_data]
                 # Recursively process children
                 child_documents = get_opentext_documents(
-                    downloader, opentext_nodes=child_ids, prefix=f"{prefix}{node_data['name']}/"
+                    downloader, opentext_nodes=child_ids, parents=[*parents, node_data["name"]]
                 )
                 result.update(child_documents)
             case "Document":
-                # Handle individual document
-                modify_date_str = node_data["modify_date"]
-                modified_at_utc = datetime.fromisoformat(modify_date_str.replace("Z", "+00:00"))
                 # Get file extension from versions API (OpenText API quirk)
-                versions_response = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0")
-                extension = versions_response.json()["data"]["file_type"].lower()
+                versions = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()["data"]
+                extension = versions["file_type"].lower()
                 # Create source URI with extension
-                source_uri = f"{prefix}{node_data['name']}.{extension}"
-                result[source_uri] = (modified_at_utc, "")
+                source_uri = urlunsplit(
+                    (
+                        "opentext",
+                        f"{node_id}.{extension}",
+                        "",
+                        urlencode({"version_number": versions["version_number"]}),
+                        "",
+                    )
+                )
+                result[source_uri] = "/".join([*parents, f"{node_data['name']}.{extension}"])
             case "Shortcut":
                 # Get file extension from versions API (OpenText API quirk)
                 versions_response = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0")
@@ -172,21 +176,19 @@ def get_opentext_documents(
                 # Handle shortcut - follow original_id but preserve shortcut name
                 original_id = node_data["original_id"]
                 # Get the linked document(s)
-                original_documents = get_opentext_documents(downloader, opentext_nodes=[original_id], prefix="")
-                # Update the result with shortcut name instead of original name
-                for original_uri, original_info in original_documents.items():
-                    # Replace the first part of the original with the shortcut name
+                original_documents = get_opentext_documents(downloader, opentext_nodes=[original_id])
+                # Update the display name with shortcut name instead of original name
+                for original_uri, original_display_name in original_documents.items():
+                    # Replace the first part of the original display name with the shortcut name
                     # If linked to a document, this will replace the full document name
                     # If linked to a folder, this will replace the top folder name
-                    uri_parts = original_uri.split("/")
+                    display_name_parts = original_display_name.split("/")
                     if extension:
-                        uri_parts[0] = f"{node_data['name']}.{extension}"
+                        display_name_parts[0] = f"{node_data['name']}.{extension}"
                     else:
-                        uri_parts[0] = node_data["name"]
-                    # Construct full URI
-                    source_uri = f"{prefix}{'/'.join(uri_parts)}"
-                    # Save the original modification time and metadata
-                    result[source_uri] = original_info
+                        display_name_parts[0] = node_data["name"]
+                    # Save the new display name
+                    result[original_uri] = "/".join(parents + display_name_parts)
 
     return result
 
