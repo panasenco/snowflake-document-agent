@@ -9,7 +9,7 @@ create or replace cortex search service search_metadata
     target_lag = '1 day'
     embedding_model = '<% ctx.env.search_embedding_model %>'
     initialize = on_schedule
-    as (select *, regexp_substr(source_uri, '[^/]*$') as filename from enhanced_metadata);
+    as (select * from document_metadata);
 
 alter cortex search service search_metadata suspend indexing;
 
@@ -20,7 +20,7 @@ create or replace cortex search service search_contents
     target_lag = '1 day'
     embedding_model = '<% ctx.env.search_embedding_model %>'
     initialize = on_schedule
-    as (select *, regexp_substr(source_uri, '[^/]*$') as filename from document_chunks);
+    as (select * from document_chunks);
 
 alter cortex search service search_contents suspend indexing;
 
@@ -57,11 +57,11 @@ create or replace agent <% ctx.env.agent_name %>
       id_column: "SOURCE_URI"
       max_results: <% ctx.env.agent_metadata_max_results %>
       search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.SEARCH_METADATA"
-      title_column: "FILENAME"
+      title_column: "DISPLAY_NAME"
       
     search_document_contents:
       id_column: "SOURCE_URI"
       max_results: <% ctx.env.agent_document_max_results %>
       search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.SEARCH_CONTENTS"
-      title_column: "FILENAME"
+      title_column: "DISPLAY_NAME"
   $$;
