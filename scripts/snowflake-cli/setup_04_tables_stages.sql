@@ -12,7 +12,7 @@ create table if not exists document_metadata (
     display_name string,
     generated_metadata string
 ) change_tracking = true;
-grant select, insert, delete, update, truncate on table enhanced_metadata to role <% ctx.env.role %>;
+grant select, insert, delete, update, truncate on table document_metadata to role <% ctx.env.role %>;
 
 -- Underlying tables for content search
 create table if not exists document_text (

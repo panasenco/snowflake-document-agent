@@ -13,7 +13,7 @@ import yaml
 
 snowflake.connector.paramstyle = "numeric"
 
-ALL_TABLES = ["document_metadata", "enhanced_metadata", "document_text", "document_chunks"]
+ALL_TABLES = ["document_metadata", "document_text", "document_chunks"]
 # See https://docs.snowflake.com/en/user-guide/snowflake-cortex/parse-document#input-requirements
 CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "txt"}
 
@@ -35,8 +35,6 @@ def configure_connection(connection: SnowflakeConnection | str, config: dict[str
     Either way, updates the role/warehouse/database/schema in the Snowflake connection from the config dict."""
     if isinstance(connection, str):
         connection = snowflake.connector.connect(connection_name=connection)
-    # Disable autocommit for rollback ability
-    connection.autocommit = False
     # Set the config attributes
     with connection.cursor() as cursor:
         for attribute in ["role", "warehouse", "database", "schema"]:
@@ -166,6 +164,8 @@ def generate_document_metadata(
                 || substr(document_text, 1, :5) || chr(10) ||
                 '=== Document excerpt ends here ==='
             ) as generated_metadata
+        from document_text
+        where source_uri = :1
         """,
         (
             source_uri,
@@ -209,7 +209,7 @@ def chunk_document(
     )
 
 
-def commit(
+def commit_document(
     cursor: SnowflakeCursor,
     source_uri: str,
     /,
@@ -263,7 +263,7 @@ def process_document(
         chunk_document(cursor, source_uri=source_uri, display_name=display_name, config=config)
         # Commit
         logger.info(f"Processed {source_uri} - Deleting previous versions of file")
-        commit(cursor, source_uri)
+        commit_document(cursor, source_uri)
 
 
 def clear_stage(configured_connection: SnowflakeConnection, /) -> None:
@@ -272,7 +272,7 @@ def clear_stage(configured_connection: SnowflakeConnection, /) -> None:
         cursor.execute("REMOVE @documents")
 
 
-def delete(
+def delete_document(
     configured_connection: SnowflakeConnection,
     source_uri: str,
     /,
@@ -325,7 +325,7 @@ def process_documents(
                 any_processed = True
             except Exception as err:
                 logger.error(f"Error processing {source_uri} - deleting from database. {type(err).__name__}: {err}")
-                delete(configured_connection, source_uri)
+                delete_document(configured_connection, source_uri)
     return any_processed
 
 
@@ -345,7 +345,7 @@ def get_snowflake_documents(
             "select source_uri from document_metadata where source_uri like :1",
             (prefix + "%",),
         )
-        return set(cursor)
+        return {row[0] for row in cursor}
 
 
 def refresh_search_services(configured_connection: SnowflakeConnection) -> None:
@@ -385,7 +385,7 @@ def process_changed_documents(
     deleted_uris = target_uris - source_uris
     for source_uri in deleted_uris:
         logger.info(f"Deleting document {source_uri} from Snowflake...")
-        delete(configured_connection, source_uri)
+        delete_document(configured_connection, source_uri)
     # Process the updated documents
     any_processed = process_documents(
         configured_connection,
