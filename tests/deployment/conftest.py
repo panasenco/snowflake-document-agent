@@ -148,7 +148,7 @@ def existing_schema(snowflake_conn, pytestconfig):
         cursor.execute(f"TRUNCATE TABLE IF EXISTS {table}")
         print(f"  Truncated {table}")
 
-    clear_stage(cursor)
+    clear_stage(snowflake_conn)
     print("  Cleared @documents stage")
 
     yield schema_name

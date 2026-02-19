@@ -4,12 +4,12 @@ use schema <% ctx.env.database %>.<% ctx.env.schema %>;
 
 -- Metadata search
 create or replace cortex search service search_metadata
-    on enhanced_metadata
+    on generated_metadata
     warehouse = <% ctx.env.warehouse %>
     target_lag = '1 day'
     embedding_model = '<% ctx.env.search_embedding_model %>'
     initialize = on_schedule
-    as (select * from document_metadata);
+    as select * from document_metadata;
 
 alter cortex search service search_metadata suspend indexing;
 
@@ -20,7 +20,7 @@ create or replace cortex search service search_contents
     target_lag = '1 day'
     embedding_model = '<% ctx.env.search_embedding_model %>'
     initialize = on_schedule
-    as (select * from document_chunks);
+    as select * from document_chunks;
 
 alter cortex search service search_contents suspend indexing;
 
