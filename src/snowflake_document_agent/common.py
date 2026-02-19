@@ -1,6 +1,5 @@
-from datetime import datetime, timezone
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from logging import Logger, getLogger
-from multiprocessing import Pool
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -46,32 +45,6 @@ def configure_connection(connection: SnowflakeConnection | str, config: dict[str
     return connection
 
 
-def clear_stage(cursor: SnowflakeCursor) -> None:
-    """Clear the documents stage before ingesting new documents."""
-    cursor.execute("REMOVE @documents")
-
-
-def delete_documents(
-    configured_connection: SnowflakeConnection,
-    *,
-    delete_uris: set[str],
-) -> None:
-    """Batch delete documents.
-    Accepts an already-configured (role, warehouse, schema set) connection object.
-    Note that document deletion doesn't need to be parallelized.
-    """
-    if not delete_uris:
-        return
-    with configured_connection.cursor() as cursor:
-        # Create a string of placeholders: :1, :2, ..., :N
-        placeholders = ", ".join([f":{i + 1}" for i in range(len(delete_uris))])
-        for table in ALL_TABLES:
-            cursor.execute(
-                f"delete from {table} where source_uri in ({placeholders})",
-                tuple(delete_uris),
-            )
-
-
 def stage_document(
     cursor: SnowflakeCursor,
     *,
@@ -96,37 +69,6 @@ def stage_document(
     return (stage_parent + "/" + local_path.name) if stage_parent else local_path.name
 
 
-def update_document_metadata(
-    cursor: SnowflakeCursor,
-    *,
-    source_uri: str,
-    modified_at_utc: datetime,
-    metadata: str = "",
-    insert: bool,
-) -> None:
-    """Add (if insert=True) or update (if insert=False) a document's metadata in the table document_metadata."""
-    select_stmt = """
-        select
-            :1 as source_uri,
-            :2::timestamp_ntz as modified_at_utc,
-            :3 as metadata
-        """
-    if insert:
-        query = f"""
-            insert into document_metadata (source_uri, modified_at_utc, metadata)
-            {select_stmt}
-            """
-    else:
-        query = f"""
-            update document_metadata set
-                modified_at_utc = updated_metadata.modified_at_utc,
-                metadata = updated_metadata.metadata
-            from ({select_stmt}) as updated_metadata
-            where document_metadata.source_uri = updated_metadata.source_uri
-            """
-    cursor.execute(query, (source_uri, modified_at_utc.isoformat(), metadata))
-
-
 def word_doc_to_html(local_path: Path) -> str:
     """Gets the contents a Word document (.doc/.docx) in HTML format."""
     with open(local_path, "rb") as docx_file:
@@ -148,318 +90,275 @@ def excel_to_html(local_path: Path) -> str:
     return html_content
 
 
-def update_document_text(
+def set_document_text(
     cursor: SnowflakeCursor,
     *,
     source_uri: str,
+    display_name: str,
     text: str,
-    insert: bool,
 ) -> None:
     """Uploads a document's text directly to document_text for documents that don't need to be parsed."""
-    select_stmt = """
-        select
-            :1 as source_uri,
-            :2 as document_text
+    cursor.execute(
         """
-    if insert:
-        query = f"""
-            insert into document_text (source_uri, document_text)
-            {select_stmt}
-            """
-    else:
-        query = f"""
-            update document_text set
-                document_text = updated_text.document_text
-            from ({select_stmt}) as updated_text
-            where document_text.source_uri = updated_text.source_uri
-            """
-    cursor.execute(query, (source_uri, text))
+        insert into document_text (source_uri, display_name, document_text)
+        select :1 as source_uri, :2 as display_name, :3 as document_text
+        """,
+        (source_uri, display_name, text),
+    )
 
 
 def parse_document(
     cursor: SnowflakeCursor,
     *,
     source_uri: str,
+    display_name: str,
     stage_path: str,
-    insert: bool,
 ) -> None:
     """Parses a staged document and inserts into document_text.
     Raises RuntimeError if the parsing fails.
     """
-    select_stmt = """
+    # Use ai_parse_document to generate the parsed text
+    cursor.execute(
+        """
+        insert into document_text (source_uri, display_name, document_text)
         select
             :1 as source_uri,
-            AI_PARSE_DOCUMENT(
-                TO_FILE('@documents', :2),
+            :2 as display_name,
+            ai_parse_document(
+                to_file('@documents', :3),
                 {'mode': 'OCR'}
             )::string as document_text
-        """
-
-    if insert:
-        query = f"""
-            insert into document_text (source_uri, document_text)
-            {select_stmt}
-        """
-    else:
-        query = f"""
-            update document_text set
-                document_text = updated_text.document_text
-            from ({select_stmt}) as updated_text
-            where document_text.source_uri = updated_text.source_uri
-            """
-
-    cursor.execute(query, (source_uri, stage_path))
-
+        """,
+        (source_uri, display_name, stage_path),
+    )
     # Verify the content was inserted/updated successfully
-    cursor.execute("SELECT document_text FROM document_text WHERE source_uri = :1", (source_uri,))
+    cursor.execute("SELECT substring(document_text, 1, 100) FROM document_text WHERE source_uri = :1", (source_uri,))
     result = cursor.fetchone()
-
     if result is None:
-        raise RuntimeError(f"Document parsing failed - no content found for {source_uri}")
-
+        raise RuntimeError(f"Document parsing for {source_uri} failed - no content found.")
     parsed_text = result[0]
     if parsed_text is None or len(parsed_text.strip()) == 0:
-        raise RuntimeError(f"Document parsing failed - empty content for {source_uri}")
-
-    # Check if AI_PARSE_DOCUMENT returned an error message in JSON format
+        raise RuntimeError(f"Document parsing for {source_uri} failed - empty content.")
     if parsed_text.strip().startswith('{"error'):
-        raise RuntimeError(f"Document parsing failed for {source_uri}: {parsed_text}")
+        raise RuntimeError(f"Document parsing for {source_uri} failed with error: {parsed_text}")
 
 
 def generate_document_metadata(
     cursor: SnowflakeCursor,
     *,
     source_uri: str,
+    display_name: str,
     config: dict[str, Any],
-    insert: bool,
 ) -> None:
     """Generates synthetic metadata for a parsed document."""
-    select_stmt = f"""
+    cursor.execute(
+        """
+        insert into document_metadata (source_uri, display_name, generated_metadata)
         select
             :1 as source_uri,
+            :2 as display_name,
             snowflake.cortex.complete(
-                '{config["metadata_model"]}',
-                '{config["metadata_prompt"].replace("'", "''").replace(chr(10), chr(92) + "n")}'
-                || chr(10) || chr(10) || 'Document URI: ' || :1
-                || chr(10) || 'Document starts here:' || chr(10)
-                || substr(document_text, 1, {config["metadata_first_chars"]})
-                || chr(10) || 'Document ends here' || chr(10) || chr(10)
-            ) as enhanced_metadata
-        from document_text
-        where source_uri = :1
-        """
-
-    if insert:
-        query = f"""
-            insert into enhanced_metadata (source_uri, enhanced_metadata)
-            {select_stmt}
-        """
-    else:
-        query = f"""
-            update enhanced_metadata set
-                enhanced_metadata = updated_metadata.enhanced_metadata
-            from ({select_stmt}) as updated_metadata
-            where enhanced_metadata.source_uri = updated_metadata.source_uri
-        """
-    cursor.execute(query, (source_uri,))
+                :3,
+                'Document name: ' || :2 || chr(10) ||
+                'Document URI: ' || :1 || chr(10) || chr(10) ||
+                :4 || chr(10) || chr(10) ||
+                '=== Document excerpt starts here ===' || chr(10)
+                || substr(document_text, 1, :5) || chr(10) ||
+                '=== Document excerpt ends here ==='
+            ) as generated_metadata
+        """,
+        (
+            source_uri,
+            display_name,
+            config["metadata_model"],
+            config["metadata_prompt"],
+            config["metadata_first_chars"],
+        ),
+    )
 
 
 def chunk_document(
     cursor: SnowflakeCursor,
     *,
     source_uri: str,
+    display_name: str,
     config: dict[str, Any],
-    insert: bool,
 ) -> None:
     """Splits documents into overlapping chunks for easier search."""
-    select_stmt = f"""
+    cursor.execute(
+        """
+        insert into document_chunks (source_uri, display_name, contextualized_chunk)
         select
             :1 as source_uri,
-            enhanced_metadata.enhanced_metadata
+            :2 as display_name,
+            document_metadata.generated_metadata
             || chr(10) || chr(10) || 'Document chunk:' || chr(10)
             || chunks.value as contextualized_chunk
         from document_text
-        join enhanced_metadata
-            on document_text.source_uri = enhanced_metadata.source_uri,
+        inner join document_metadata
+            on document_text.source_uri = document_metadata.source_uri,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             document_text.document_text,
             'none',
-            {config["chunk_size"]},
-            {config["chunk_overlap"]}
+            :3,
+            :4
         )) as chunks
         where document_text.source_uri = :1
-        """
+        """,
+        (source_uri, display_name, config["chunk_size"], config["chunk_overlap"]),
+    )
 
-    if insert:
-        query = f"""
-            insert into document_chunks (source_uri, contextualized_chunk)
-            {select_stmt}
-            """
-    else:
-        query = f"""
-            update document_chunks set
-                contextualized_chunk = updated_chunks.contextualized_chunk
-            from ({select_stmt}) as updated_chunks
-            where document_chunks.source_uri = updated_chunks.source_uri
-            """
-    cursor.execute(query, (source_uri,))
+
+def commit(
+    cursor: SnowflakeCursor,
+    source_uri: str,
+    /,
+) -> None:
+    """Commits a document addition.
+    Accepts an already-configured (role, warehouse, schema set) connection object.
+    Deletes all previous versions of the document's rows from all tables.
+    Note that previous versions are considered as sharing the locator before the query character '?'.
+    E.g. "ot://my/file?v=34" and "ot://my/file?v=35" are considered different versions of the same document.
+    """
+    source_parts = source_uri.split("?")
+    assert len(source_parts) == 2, f"Source URI {source_uri} did not have exactly one '?' character, aborting..."
+    for table in ALL_TABLES:
+        cursor.execute(
+            f"delete from {table} where source_uri like :1 and source_uri <> :2",
+            (source_parts[0] + "%", source_uri),
+        )
 
 
 def process_document(
-    connection: SnowflakeConnection | str,
+    configured_connection: SnowflakeConnection,
     source_uri: str,
+    display_name: str,
     downloader: Callable[[str], Path],
-    modified_at_utc: datetime,
-    metadata: str,
     config: dict[str, Any],
-    insert: bool,
     logger: Logger = getLogger(),
-) -> str | None:
+) -> None:
     """Process a single document end-to-end."""
-    try:
-        local_path = downloader(source_uri)
-    except Exception as err:
-        return f"Error downloading {source_uri}: {type(err).__name__} - {err}"
-    configured_connection = configure_connection(connection, config)
+    local_path = downloader(source_uri)
     with configured_connection.cursor() as cursor:
-        cursor.execute("begin transaction")
-        try:
-            document_type = local_path.suffix.removeprefix(".").lower()
-            match document_type:
-                case "html" | "txt":
-                    # Upload the contents directly
-                    update_document_text(cursor, source_uri=source_uri, text=local_path.read_text(), insert=insert)
-                case "xls" | "xlsx":
-                    # Convert Excel to HTML
-                    document_html = excel_to_html(local_path)
-                    update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
-                case "doc" | "docx":
-                    # Convert Word to HTML
-                    document_html = word_doc_to_html(local_path)
-                    update_document_text(cursor, source_uri=source_uri, text=document_html, insert=insert)
-                case _:
-                    # Parse in Snowflake
-                    stage_path = stage_document(cursor, source_uri=source_uri, local_path=local_path)
-                    parse_document(cursor, source_uri=source_uri, stage_path=stage_path, insert=insert)
-            # Store basic document metadata first
-            update_document_metadata(
-                cursor, source_uri=source_uri, modified_at_utc=modified_at_utc, metadata=metadata, insert=insert
-            )
-            # Next generate synthetic metadata
-            generate_document_metadata(cursor, source_uri=source_uri, config=config, insert=insert)
-            # Split the document into chunks
-            chunk_document(cursor, source_uri=source_uri, config=config, insert=insert)
-            logger.info(f"Processed {source_uri} - Committing Snowflake transaction")
-            cursor.execute("commit")
-            return None
-        except Exception as err:
-            logger.error(f"Unable to process {source_uri} - Rolling back Snowflake transaction")
-            cursor.execute("rollback")
-            return f"Error processing {source_uri}: {type(err).__name__} - {err}"
+        document_type = local_path.suffix.removeprefix(".").lower()
+        match document_type:
+            case "html" | "txt":
+                # Upload the contents directly
+                set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=local_path.read_text())
+            case "xls" | "xlsx":
+                # Convert Excel to HTML
+                document_html = excel_to_html(local_path)
+                set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=document_html)
+            case "doc" | "docx":
+                # Convert Word to HTML
+                document_html = word_doc_to_html(local_path)
+                set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=document_html)
+            case _:
+                # Parse in Snowflake
+                stage_path = stage_document(cursor, source_uri=source_uri, local_path=local_path)
+                parse_document(cursor, source_uri=source_uri, display_name=display_name, stage_path=stage_path)
+        # Generate synthetic metadata
+        generate_document_metadata(cursor, source_uri=source_uri, display_name=display_name, config=config)
+        # Split the document into chunks
+        chunk_document(cursor, source_uri=source_uri, display_name=display_name, config=config)
+        # Commit
+        logger.info(f"Processed {source_uri} - Deleting previous versions of file")
+        commit(cursor, source_uri)
+
+
+def clear_stage(configured_connection: SnowflakeConnection, /) -> None:
+    """Clear the documents stage before ingesting new documents."""
+    with configured_connection.cursor() as cursor:
+        cursor.execute("REMOVE @documents")
+
+
+def delete(
+    configured_connection: SnowflakeConnection,
+    source_uri: str,
+    /,
+) -> None:
+    """Deletes a particular source_uri from all tables without affecting the document's other versions.
+    Accepts an already-configured (role, warehouse, schema set) connection object.
+    """
+    with configured_connection.cursor() as cursor:
+        for table in ALL_TABLES:
+            cursor.execute(f"delete from {table} where source_uri = :1", (source_uri,))
 
 
 def process_documents(
-    connection: SnowflakeConnection | str,
-    sources: list[tuple[str, Callable[[str], Path], datetime, str, bool]],
+    configured_connection: SnowflakeConnection,
+    sources: dict[str, str],
     *,
+    downloader: Callable[[str], Path],
     config: dict[str, Any],
-    max_workers: int = 1,
+    max_workers: int = 8,
     logger: Logger = getLogger(),
-    suppress_errors: bool = True,
+    reraise: bool = False,
 ) -> bool:
     """Process documents end-to-end in parallel.
     Returns True if any documents were successfully processed, False otherwise.
-    Requires a list of (source_uri, downloader, modified_at_utc, metadata, insert) tuples.
-    Accepts a Snowflake connection as either a direct connection object or a string connection name.
-    Setting max_workers > 1 requires the connection to be a string name rather than a SnowflakeConnection object.
-    When max_workers > 1 and the connection is a string connection name, uses multiprocessing to parallelize the load.
+    Requires a Snowflake connection as either a direct connection object or a string connection name.
+    Requires a dictionary of sources with source_uri's as keys and display_name's as values.
+    Requires a callable downloader that returns a source_uri's local downloaded path.
     Displays a progress bar.
     Doesn't crash when a document fails to process, but displays detailed information about the error.
     """
     any_processed = False
-    if max_workers > 1:
-        if isinstance(connection, SnowflakeConnection):
-            raise ValueError("The connection parameter must be a string connection name when max_workers > 1")
-        # Process in parallel with multiprocessing
-        with Pool(processes=max_workers) as pool:
-            results = pool.starmap(
+    clear_stage(configured_connection)
+    with ThreadPoolExecutor(max_workers) as executor:
+        future_uris = {
+            executor.submit(
                 process_document,
-                [
-                    (
-                        connection,
-                        source_uri,
-                        downloader,
-                        modified_at_utc,
-                        metadata,
-                        config,
-                        insert,
-                    )
-                    for (source_uri, downloader, modified_at_utc, metadata, insert) in sources
-                ],
-            )
-        for result in results:
-            if result is None:
-                any_processed = True
-            else:
-                logger.error(result)
-    else:
-        # Process sequentially directly
-        for source_uri, downloader, modified_at_utc, metadata, insert in sources:
-            result = process_document(
-                connection,
+                configured_connection,
                 source_uri,
+                display_name,
                 downloader,
-                modified_at_utc,
-                metadata,
                 config,
-                insert,
                 logger,
-            )
-            if result is None:
+            ): source_uri
+            for source_uri, display_name in sources.items()
+        }
+        for future in as_completed(future_uris):
+            source_uri = future_uris[future]
+            try:
+                future.result()
                 any_processed = True
-            else:
-                logger.error(result)
+            except Exception as err:
+                logger.error(f"Error processing {source_uri} - deleting from database. {type(err).__name__}: {err}")
+                delete(configured_connection, source_uri)
     return any_processed
 
 
 def get_snowflake_documents(
     configured_connection: SnowflakeConnection,
     prefix: str,
-) -> dict[str, tuple[datetime, str]]:
+) -> set[str]:
     """Get information about the documents currently in Snowflake.
     Accepts an already-configured (role, warehouse, schema set) connection object.
-    Returns a dictionary with source_uri's as keys and (modified_at_utc, metadata) tuples as values.
-    Filter on source_uri prefixes, e.g. "local" for URIs like "local://path/to/the/file".
+    Returns a set of source_uri's.
+    Filter on source_uri prefixes, e.g. "local://" for URIs like "local://path/to/the/file".
     The prefix can also be used to filter for subfolders, e.g. "local://path/to".
     """
     with configured_connection.cursor() as cursor:
         # Query document_metadata table for documents matching the prefix
         cursor.execute(
-            "select source_uri, modified_at_utc, metadata from document_metadata where source_uri like :1 || '%'",
-            (prefix,),
+            "select source_uri from document_metadata where source_uri like :1",
+            (prefix + "%",),
         )
-        return {
-            source_uri: (modified_at_utc.replace(tzinfo=timezone.utc), metadata)
-            for source_uri, modified_at_utc, metadata in cursor
-        }
+        return set(cursor)
 
 
 def refresh_search_services(configured_connection: SnowflakeConnection) -> None:
     """Make sure the snowflake-document-agent Cortex search services have the latest data.
     Accepts an already-configured (role, warehouse, schema set) connection object.
     """
-    # Need to temporarily enable autocommit for Cortex search service refresh
-    configured_connection.autocommit = True
-    try:
-        with configured_connection.cursor() as cursor:
-            for search_service in ["search_metadata", "search_contents"]:
-                cursor.execute(f"alter cortex search service if exists {search_service} refresh")
-    finally:
-        configured_connection.autocommit = False
+    with configured_connection.cursor() as cursor:
+        for search_service in ["search_metadata", "search_contents"]:
+            cursor.execute(f"alter cortex search service if exists {search_service} refresh")
 
 
 def process_changed_documents(
-    sources: dict[str, tuple[datetime, str]],
+    sources: dict[str, str],
     *,
     connection: SnowflakeConnection | str = "default",
     downloader: Callable[[str], Path],
@@ -469,9 +368,9 @@ def process_changed_documents(
     logger: Logger = getLogger(),
 ) -> None:
     """Process just the documents that have changed since the last ingestion into Snowflake.
-    Accepts a dictionary with source_uri's as keys and (modified_at_utc, metadata) tuples as values.
+    Accepts a dictionary with source_uri's as keys and display_name's as the values.
     Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
-    Accepts a Snowflake connection as either a connection name (string) or the connection object.
+    Accepts a Snowflake connection as either a connection name (string) or a connection object.
     Deletes the documents matching the prefix that are only in Snowflake and no longer in the source.
     Ingests (insert=True) new documents matching the prefix into Snowflake.
     Reingests (insert=False) documents matching the prefix that have newer modification timestamps or different metadata
@@ -480,40 +379,18 @@ def process_changed_documents(
     if config is None:
         config = load_config()
     configured_connection = configure_connection(connection, config)
-    targets = get_snowflake_documents(configured_connection, prefix)
+    target_uris = get_snowflake_documents(configured_connection, prefix)
     source_uris = set(sources)
-    target_uris = set(targets)
     # Delete the removed documents
     deleted_uris = target_uris - source_uris
     for source_uri in deleted_uris:
         logger.info(f"Deleting document {source_uri} from Snowflake...")
-    delete_documents(configured_connection, delete_uris=deleted_uris)
-    # Initialize a dict with source_uri's as keys and insert bools as values
-    source_inserts = {}
-    for source_uri in source_uris - target_uris:
-        logger.info(f"Ingesting new document {source_uri} into Snowflake...")
-        source_inserts[source_uri] = True
-    for source_uri in source_uris & target_uris:
-        if sources[source_uri][0] > targets[source_uri][0]:
-            logger.info(f"Reingesting modified (newer timestamp) document {source_uri} into Snowflake...")
-            source_inserts[source_uri] = False
-        elif sources[source_uri][1] != targets[source_uri][1]:
-            logger.info(f"Reingesting modified (changed metadata) document {source_uri} into Snowflake...")
-            source_inserts[source_uri] = False
-    # Create a list of downloaded source files, handling errors gracefully
-    source_files = {}
-    for source_uri in source_inserts:
-        try:
-            source_files[source_uri] = downloader(source_uri)
-        except Exception as err:
-            logger.error(f"Failed to download {source_uri}: {type(err).__name__} - {err}")
-    # Process the added and modified documents
+        delete(configured_connection, source_uri)
+    # Process the updated documents
     any_processed = process_documents(
-        connection,
-        [
-            (source_uri, downloader, sources[source_uri][0], sources[source_uri][1], insert)
-            for source_uri, insert in source_inserts.items()
-        ],
+        configured_connection,
+        {source_uri: sources[source_uri] for source_uri in (source_uris - target_uris)},
+        downloader=downloader,
         config=config,
         max_workers=max_workers,
         logger=logger,
