@@ -1,20 +1,21 @@
 import argparse
-from datetime import datetime, timezone
 import logging
 from pathlib import Path
-from typing import Callable
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from .common import process_changed_documents
 
 
-def get_local_documents(root_path: Path, prefix: str) -> dict[str, tuple[datetime, str]]:
-    """Returns a dictionary with source_uris as the keys and (modified_at_utc, "") tuples as the values for all files
-    in the root folder and its subfolders.
+def get_local_documents(root_path: Path, source_name: str = "") -> dict[str, str]:
+    """Returns all files in the root folder and its subfolders.
+    Returns a dictionary with source_uri's (absolute paths with timestamps) as the keys and
+    display_name's (paths relative to the root directory) as the values.
+    The source_name is the URI netloc, e.g. 'local' for 'file://local/absolute/path/to/file'.
     """
+    root_path = root_path.absolute()
     if not root_path.exists():
         raise RuntimeError(f"Error: Root directory '{root_path}' does not exist.")
     local_documents = {}
-
     # Use Path.walk (Python 3.12+) to efficiently prune directories
     for root, dirs, files in root_path.walk():
         # Exclude directories starting with a period, like .git, .venv, etc
@@ -22,31 +23,30 @@ def get_local_documents(root_path: Path, prefix: str) -> dict[str, tuple[datetim
         for file_name in files:
             if file_name.startswith("."):
                 continue
-            local_path = root / file_name
-            relative_path = local_path.relative_to(root_path)
-            source_uri = f"{prefix}://{relative_path.as_posix()}"
-            modified_timestamp = local_path.stat().st_mtime
-            modified_at_utc = datetime.fromtimestamp(modified_timestamp, tz=timezone.utc)
-            local_documents[source_uri] = (modified_at_utc, "")
+            file_path = (root / file_name).absolute()
+            source_uri = urlunsplit(
+                (
+                    "file",
+                    source_name,
+                    urlsplit(file_path.as_uri()).path,
+                    urlencode({"mtime": int(file_path.stat().st_mtime)}),
+                    "",
+                )
+            )
+            local_documents[source_uri] = file_path.relative_to(root_path).as_posix()
     return local_documents
 
 
-def get_local_downloader(root_path: Path, prefix: str) -> Callable[[str], Path]:
-    """Given a root folder and a prefix, returns a downloader function that returns paths for source_uri's.
-    The downloader function accepts only source_uri's that start with "{prefix}://" and errors otherwise.
-    The downloader function appends the part after the prefix to the root path and returns that path.
-    If the path doesn't exist, the downloader function errors.
-    This function doesn't actually "download" anything obviously but is named this way for consistency with others.
-    """
-
-    def local_downloader(source_uri: str) -> Path:
-        assert source_uri.startswith(f"{prefix}://"), f"URI {source_uri} doesn't begin with required prefix {prefix}"
-        path = root_path / source_uri.removeprefix(f"{prefix}://")
-        assert path.exists(), f"Path {path} for URI {source_uri} doesn't exist"
-        assert path.is_file(), f"Path {path} for URI {source_uri} is not a file"
-        return path
-
-    return local_downloader
+def local_downloader(source_uri: str) -> Path:
+    """Retrieves a local file on the assumption that the source_uri contains an absolute filepath."""
+    source_uri_path = urlsplit(source_uri).path
+    # Strip leading slash on Windows
+    if source_uri_path[2] == ":":
+        source_uri_path = source_uri_path[1:]
+    path = Path(source_uri_path)
+    assert path.exists(), f"Path {path} for URI {source_uri} doesn't exist"
+    assert path.is_file(), f"Path {path} for URI {source_uri} is not a file"
+    return path
 
 
 def main() -> None:
@@ -58,7 +58,12 @@ def main() -> None:
     parser.add_argument(
         "-c", "--snowflake-connection", default="default", help="Name of Snowflake connection to use (default: default)"
     )
-    parser.add_argument("-p", "--prefix", default="local", help="URI scheme prefix for the documents (default: local)")
+    parser.add_argument(
+        "-n",
+        "--source-name",
+        default="",
+        help="Name of the source to insert into the URI. Placed in the 'netloc' section of the URI.",
+    )
     parser.add_argument(
         "-v",
         "--verbose",
@@ -71,10 +76,12 @@ def main() -> None:
     logging.basicConfig(level=LOGGING_LEVELS[min(args.verbose, len(LOGGING_LEVELS) - 1)])  # cap to last level index
     args = parser.parse_args()
     root_path = Path(args.root_dir)
-    local_documents = get_local_documents(root_path=root_path, prefix=args.prefix)
-    local_downloader = get_local_downloader(root_path=root_path, prefix=args.prefix)
+    local_documents = get_local_documents(root_path=root_path, source_name=args.source_name)
     process_changed_documents(
-        local_documents, connection=args.snowflake_connection, downloader=local_downloader, prefix=args.prefix
+        local_documents,
+        connection=args.snowflake_connection,
+        downloader=local_downloader,
+        prefix=f"file://{args.source_name}",
     )
 
 

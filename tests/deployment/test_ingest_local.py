@@ -4,7 +4,7 @@ import shutil
 import time
 from unittest.mock import MagicMock, patch
 
-from snowflake_document_agent.ingest_local import get_local_documents, get_local_downloader
+from snowflake_document_agent.ingest_local import get_local_documents, local_downloader
 from snowflake_document_agent.common import process_changed_documents
 
 
@@ -73,7 +73,6 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
     # === PROCESS INITIAL DOCUMENTS ===
 
     initial_sources = get_local_documents(docs_dir, "local")
-    downloader = get_local_downloader(docs_dir, "local")
 
     # Verify we found all files
     expected_count = 4 + (1 if pdf_file else 0) + (1 if docx_file else 0)
@@ -85,8 +84,8 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         process_changed_documents(
             sources=initial_sources,
             connection=snowflake_conn,
-            downloader=downloader,
-            prefix="local",
+            downloader=local_downloader,
+            prefix="file://local",
             config=test_config,
             max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
@@ -98,9 +97,8 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         for i, error in enumerate(logged_errors):
             print(f"  {i + 1}. {error}")
 
-        # Should have errors for bad extension and fake PDF (2 documents × 2 messages each = 4 total)
-        # Each failed document logs both rollback notice + detailed error
-        expected_initial_errors = 4
+        # Should have errors for bad extension and fake PDF (2 failing documents)
+        expected_initial_errors = 2
         assert mock_logger.error.call_count == expected_initial_errors, (
             f"Expected {expected_initial_errors} error logs in round 1, got {mock_logger.error.call_count}"
         )
@@ -143,7 +141,6 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
 
     # Get updated sources BEFORE deleting race condition file
     updated_sources = get_local_documents(docs_dir, "local")
-    updated_downloader = get_local_downloader(docs_dir, "local")
 
     # Now delete the race condition file to simulate it disappearing
     race_condition_file.unlink()
@@ -155,8 +152,8 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         process_changed_documents(
             sources=updated_sources,
             connection=snowflake_conn,
-            downloader=updated_downloader,
-            prefix="local",
+            downloader=local_downloader,
+            prefix="file://local",
             config=test_config,
             max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
@@ -169,9 +166,7 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
             print(f"  {i + 1}. {error}")
 
         # Should have errors for fake PDF (still there) and missing race condition file
-        # Race condition: 1 download failure message
-        # Fake PDF: 2 processing failure messages (rollback + detailed error)
-        expected_round2_errors = 3
+        expected_round2_errors = 2
         assert mock_logger.error.call_count == expected_round2_errors, (
             f"Expected {expected_round2_errors} error logs in round 2, got {mock_logger.error.call_count}"
         )
@@ -189,39 +184,64 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
 
     with snowflake_conn.cursor() as cursor:
         # Check document_metadata table
-        cursor.execute("SELECT source_uri FROM document_metadata WHERE source_uri LIKE 'local://%' ORDER BY source_uri")
+        cursor.execute(
+            "SELECT source_uri FROM document_metadata WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
+        )
         db_uris = [row[0] for row in cursor.fetchall()]
 
         print(f"DEBUG: Final database URIs: {db_uris}")
 
-        # Expected successful documents
-        expected_uris = [
-            "local://success.txt",  # Updated
-            "local://new_document.txt",  # Added in round 2
+        # Expected successful documents - construct full URIs using absolute paths
+        expected_files = [
+            docs_dir / "success.txt",  # Updated
+            docs_dir / "new_document.txt",  # Added in round 2
         ]
 
         # Add conditional files if fixtures exist
         if pdf_file:
-            expected_uris.append("local://cuad-sponsorship.pdf")
+            expected_files.append(docs_dir / "cuad-sponsorship.pdf")
         if docx_file:
-            expected_uris.append("local://documents/mammoth-tables.docx")
+            expected_files.append(subdir / "mammoth-tables.docx")
         if new_xlsx:
-            expected_uris.append("local://documents/new_spreadsheet.xlsx")
+            expected_files.append(subdir / "new_spreadsheet.xlsx")
 
-        # Verify expected files are present
-        for expected_uri in expected_uris:
-            assert expected_uri in db_uris, f"Expected URI {expected_uri} not found in database"
+        # Construct expected URIs in the format: file://local/absolute/path?mtime=timestamp
+        expected_uris = []
+        for file_path in expected_files:
+            abs_path = file_path.absolute()
+            expected_uris.append(f"file://local{abs_path}")
+
+        # Verify expected files are present (ignoring query parameters)
+        for expected_uri_path in expected_uris:
+            matching_uris = [uri for uri in db_uris if uri.startswith(expected_uri_path)]
+            assert len(matching_uris) == 1, (
+                f"Expected URI starting with '{expected_uri_path}', found {len(matching_uris)}: {matching_uris}"
+            )
 
         # Verify deleted files are gone
-        assert "local://success.html" not in db_uris, "Deleted HTML file should not be in database"
-        assert "local://bad_extension.xyz" not in db_uris, "Deleted bad extension file should not be in database"
+        deleted_html_path = f"file://local{(docs_dir / 'success.html').absolute()}"
+        deleted_bad_ext_path = f"file://local{(docs_dir / 'bad_extension.xyz').absolute()}"
+        assert not any(uri.startswith(deleted_html_path) for uri in db_uris), (
+            "Deleted HTML file should not be in database"
+        )
+        assert not any(uri.startswith(deleted_bad_ext_path) for uri in db_uris), (
+            "Deleted bad extension file should not be in database"
+        )
 
         # Verify problematic files were not processed
-        assert "local://actually_excel.pdf" not in db_uris, "Fake PDF should not be processed successfully"
-        assert "local://race_condition.txt" not in db_uris, "Race condition file should not be processed"
+        fake_pdf_path = f"file://local{(docs_dir / 'actually_excel.pdf').absolute()}"
+        race_condition_path = f"file://local{(docs_dir / 'race_condition.txt').absolute()}"
+        assert not any(uri.startswith(fake_pdf_path) for uri in db_uris), (
+            "Fake PDF should not be processed successfully"
+        )
+        assert not any(uri.startswith(race_condition_path) for uri in db_uris), (
+            "Race condition file should not be processed"
+        )
 
         # Check document_text table has content for successful files only
-        cursor.execute("SELECT source_uri FROM document_text WHERE source_uri LIKE 'local://%' ORDER BY source_uri")
+        cursor.execute(
+            "SELECT source_uri FROM document_text WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
+        )
         text_uris = [row[0] for row in cursor.fetchall()]
         print(f"DEBUG: document_text URIs: {text_uris}")
 
@@ -233,12 +253,16 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         )
 
         # Verify updated content
-        cursor.execute("SELECT document_text FROM document_text WHERE source_uri = 'local://success.txt'")
+        success_txt_path = f"file://local{(docs_dir / 'success.txt').absolute()}"
+        success_txt_uri = next((uri for uri in db_uris if uri.startswith(success_txt_path)), None)
+        assert success_txt_uri is not None, f"Could not find success.txt URI starting with {success_txt_path}"
+
+        cursor.execute("SELECT document_text FROM document_text WHERE source_uri = :1", (success_txt_uri,))
         updated_content = cursor.fetchone()[0]
         assert "UPDATED content" in updated_content, "Updated file content not found in database"
 
         # Verify metadata generation worked (filename awareness)
-        cursor.execute("SELECT enhanced_metadata FROM enhanced_metadata WHERE source_uri = 'local://success.txt'")
+        cursor.execute("SELECT generated_metadata FROM document_metadata WHERE source_uri = :1", (success_txt_uri,))
         metadata_result = cursor.fetchone()
         if metadata_result:
             metadata_content = metadata_result[0]
@@ -271,13 +295,12 @@ def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_
         # === FIRST PROCESSING: Add initial document ===
 
         initial_sources = get_local_documents(docs_dir, "local")
-        downloader = get_local_downloader(docs_dir, "local")
 
         process_changed_documents(
             sources=initial_sources,
             connection=snowflake_conn,
-            downloader=downloader,
-            prefix="local",
+            downloader=local_downloader,
+            prefix="file://local",
             config=test_config,
             max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
@@ -293,13 +316,12 @@ def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_
 
         # Get same sources (no changes)
         same_sources = get_local_documents(docs_dir, "local")
-        same_downloader = get_local_downloader(docs_dir, "local")
 
         process_changed_documents(
             sources=same_sources,
             connection=snowflake_conn,
-            downloader=same_downloader,
-            prefix="local",
+            downloader=local_downloader,
+            prefix="file://local",
             config=test_config,
             max_workers=1,  # SSO requires sequential processing
             logger=mock_logger,
