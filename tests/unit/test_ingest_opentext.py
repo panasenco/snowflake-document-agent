@@ -1,5 +1,4 @@
 import pytest
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -7,7 +6,7 @@ from snowflake_document_agent.ingest_opentext import get_opentext_documents, Ope
 
 
 def test_get_opentext_documents_basic():
-    """Test that get_opentext_documents returns dict mapping URIs to (datetime, str) tuples."""
+    """Test that get_opentext_documents returns dict mapping URIs to display_name strings."""
     mock_downloader = Mock()
 
     # Mock API response for a single document
@@ -18,32 +17,30 @@ def test_get_opentext_documents_basic():
                 "data": {
                     "id": 12345,
                     "name": "test_document",
-                    "modify_date": "2024-01-15T10:30:00Z",
                     "type_name": "Document",
                 }
             }
         elif path == "opentext/cloud/v1/nodes/12345/versions/0":
-            mock_response.json.return_value = {"data": {"file_type": "pdf"}}
+            mock_response.json.return_value = {"data": {"file_type": "pdf", "version_number": 1}}
         return mock_response
 
     mock_downloader.call = Mock(side_effect=mock_call_side_effect)
 
     # Execute
-    docs = get_opentext_documents(mock_downloader, opentext_nodes=[12345], prefix="opentext")
+    docs = get_opentext_documents(mock_downloader, opentext_nodes=[12345])
 
-    # Verify - should return dict[str, tuple[datetime, str]]
+    # Verify - should return dict[str, str] (URI -> display_name)
     assert len(docs) == 1
-    assert "opentext://test_document.pdf" in docs
 
-    # Each document should be a tuple: (modified_at_utc, metadata)
-    assert isinstance(docs["opentext://test_document.pdf"], tuple)
-    assert len(docs["opentext://test_document.pdf"]) == 2
+    # Find the URI (should be opentext://12345.pdf?version_number=1)
+    uris = list(docs.keys())
+    assert len(uris) == 1
+    uri = uris[0]
+    assert uri.startswith("opentext://12345.pdf")
+    assert "version_number=1" in uri
 
-    modified_time, metadata = docs["opentext://test_document.pdf"]
-    assert isinstance(modified_time, datetime)
-    assert modified_time.tzinfo == timezone.utc
-    assert isinstance(metadata, str)
-    assert metadata == ""  # Empty metadata by default
+    # Should map to display name
+    assert docs[uri] == "test_document.pdf"
 
 
 def test_get_opentext_documents_handles_folder():
@@ -58,7 +55,6 @@ def test_get_opentext_documents_handles_folder():
                 "data": {
                     "id": 100,
                     "name": "Documents",
-                    "modify_date": "2024-01-01T08:00:00Z",
                     "type_name": "Folder",
                 }
             }
@@ -70,9 +66,6 @@ def test_get_opentext_documents_handles_folder():
                         "data": {
                             "properties": {
                                 "id": 200,
-                                "name": "child_doc",
-                                "modify_date": "2024-01-02T09:00:00Z",
-                                "type_name": "Document",
                             }
                         }
                     }
@@ -84,26 +77,29 @@ def test_get_opentext_documents_handles_folder():
                 "data": {
                     "id": 200,
                     "name": "child_doc",
-                    "modify_date": "2024-01-02T09:00:00Z",
                     "type_name": "Document",
                 }
             }
         elif path == "opentext/cloud/v1/nodes/200/versions/0":
-            mock_response.json.return_value = {"data": {"file_type": "docx"}}
+            mock_response.json.return_value = {"data": {"file_type": "docx", "version_number": 2}}
         return mock_response
 
     mock_downloader.call = Mock(side_effect=mock_call_side_effect)
 
     # Execute
-    docs = get_opentext_documents(mock_downloader, opentext_nodes=[100], prefix="opentext")
+    docs = get_opentext_documents(mock_downloader, opentext_nodes=[100])
 
     # Should find the document inside the folder
     assert len(docs) == 1
-    assert "opentext://Documents/child_doc.docx" in docs
 
-    modified_time, metadata = docs["opentext://Documents/child_doc.docx"]
-    assert isinstance(modified_time, datetime)
-    assert isinstance(metadata, str)
+    # Find the URI (should be opentext://200.docx?version_number=2)
+    uris = list(docs.keys())
+    uri = uris[0]
+    assert uri.startswith("opentext://200.docx")
+    assert "version_number=2" in uri
+
+    # Should map to display name with parent folder
+    assert docs[uri] == "Documents/child_doc.docx"
 
 
 def test_get_opentext_documents_handles_shortcut():
@@ -118,38 +114,41 @@ def test_get_opentext_documents_handles_shortcut():
                 "data": {
                     "id": 500,
                     "name": "shortcut_name",
-                    "modify_date": "2024-01-15T12:00:00Z",
                     "type_name": "Shortcut",
                     "original_id": 600,
                 }
             }
         elif path == "opentext/cloud/v1/nodes/500/versions/0":
-            mock_response.json.return_value = {"data": {"file_type": "pdf"}}
+            mock_response.json.return_value = {"data": {"file_type": "pdf", "version_number": 3}}
         elif path == "opentext/cloud/v1/nodes/600":
-            # Actual document
+            # Actual document (linked from shortcut)
             mock_response.json.return_value = {
                 "data": {
                     "id": 600,
                     "name": "actual_doc",
-                    "modify_date": "2024-01-10T11:00:00Z",
                     "type_name": "Document",
                 }
             }
+        elif path == "opentext/cloud/v1/nodes/600/versions/0":
+            mock_response.json.return_value = {"data": {"file_type": "pdf", "version_number": 1}}
         return mock_response
 
     mock_downloader.call = Mock(side_effect=mock_call_side_effect)
 
     # Execute
-    docs = get_opentext_documents(mock_downloader, opentext_nodes=[500], prefix="opentext")
+    docs = get_opentext_documents(mock_downloader, opentext_nodes=[500])
 
-    # Should use shortcut name but resolve to actual document data
+    # Should have one document with shortcut's display name
     assert len(docs) == 1
-    assert "opentext://shortcut_name.pdf" in docs
 
-    modified_time, metadata = docs["opentext://shortcut_name.pdf"]
-    # Should use actual document's modification time
-    expected_time = datetime(2024, 1, 10, 11, 0, 0, tzinfo=timezone.utc)
-    assert modified_time == expected_time
+    # Find the URI - should use actual document's node ID (600) from the recursive call
+    uris = list(docs.keys())
+    uri = uris[0]
+    assert uri.startswith("opentext://600.pdf")
+    assert "version_number=1" in uri
+
+    # Should use shortcut name in display name (shortcut_name.pdf replaces actual_doc.pdf)
+    assert docs[uri] == "shortcut_name.pdf"
 
 
 def test_opentext_downloader_call_basic():
@@ -174,20 +173,23 @@ def test_opentext_downloader_call_basic():
             mock_content_response.content = b"fake document content"
             mock_get.return_value = mock_content_response
 
-            # Test downloading a document
-            result = downloader("opentext://12345/test_document.pdf")
+            # Test downloading a document using new netloc format
+            result = downloader("opentext://12345.pdf?version_number=1")
 
             # Should return a Path
             assert isinstance(result, Path)
             assert result.exists()
             assert result.suffix == ".pdf"
+            assert "12345_" in result.name  # Should have node ID prefix
 
             # Should have made API call to download content
-            mock_get.assert_called_once()
+            mock_get.assert_called_once_with(
+                "https://api.example.com/opentext/cloud/v1/nodes/12345/content", headers=downloader.headers
+            )
 
 
-def test_opentext_downloader_call_invalid_prefix():
-    """Test that OpenTextDownloader.__call__ errors on invalid URI prefix."""
+def test_opentext_downloader_call_invalid_uri_format():
+    """Test that OpenTextDownloader.__call__ errors on invalid URI format."""
     with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
@@ -201,13 +203,17 @@ def test_opentext_downloader_call_invalid_prefix():
             app_client_secret="app_secret",
         )
 
-        # Should error for wrong prefix
-        with pytest.raises(AssertionError, match="required prefix"):
-            downloader("sharepoint://file1.txt")
+        # Should error for URI without proper netloc format (no dot separator)
+        with pytest.raises(ValueError):
+            downloader("opentext://12345")
 
-        # Should error for no prefix at all
-        with pytest.raises(AssertionError, match="required prefix"):
-            downloader("file1.txt")
+        # Should error for URI with empty netloc
+        with pytest.raises(ValueError):
+            downloader("opentext://")
+
+        # Should error for URI without netloc (path-based)
+        with pytest.raises(ValueError):
+            downloader("opentext:///path/to/file.pdf")
 
 
 def test_opentext_downloader_initialization():
