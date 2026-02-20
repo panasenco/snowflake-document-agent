@@ -13,8 +13,6 @@ from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_att
 
 from .common import get_console_logger, process_changed_documents
 
-logger = logging.getLogger(__name__)
-
 
 def is_retriable_requests_error(e: Exception) -> bool:
     """Determine if a requests error should be retried."""
@@ -35,7 +33,10 @@ class OpenTextDownloader:
         api_prefix: str = None,
         app_client_id: str = None,
         app_client_secret: str = None,
+        logger: logging.Logger = logging.getLogger(),
     ):
+        self.logger = logger
+
         self.client_id = client_id or os.environ.get("OPENTEXT_CLIENT_ID")
         self.client_secret = client_secret or os.environ.get("OPENTEXT_CLIENT_SECRET")
         self.api_prefix = api_prefix or os.environ.get("OPENTEXT_API_PREFIX")
@@ -71,6 +72,7 @@ class OpenTextDownloader:
         }
 
         auth_response = self.call("POST", "opentext/cloud/v1/auth", headers={}, data=auth_data)
+        self.logger.info("OpenTextDownloader successfully authenticated")
         token_dict = auth_response.json()
         access_token = token_dict["access_token"]
 
@@ -86,7 +88,7 @@ class OpenTextDownloader:
         wait=wait_random_exponential(multiplier=1, max=60),
         stop=stop_after_attempt(3),
         reraise=True,
-        before_sleep=before_sleep_log(logger, log_level=logging.INFO, exc_info=True),
+        before_sleep=before_sleep_log(logging.getLogger(), log_level=logging.INFO, exc_info=True),
     )
     def call(
         self,
@@ -110,17 +112,6 @@ class OpenTextDownloader:
         response.raise_for_status()
         return response
 
-    def get_document_extension_version(self, node_id: int, /) -> tuple[str, str]:
-        """Gets a (extension, version_number) tuple for a document."""
-        version = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()
-        if version["data"]["file_type"]:
-            extension = "." + version["data"]["file_type"].lower()
-        elif version["data"]["mime_type"]:
-            extension = guess_extension(version["data"]["mime_type"])
-        else:
-            raise ValueError(f"Unable to determine extension of OpenText node {node_id}.")
-        return extension, version["data"]["version_number"]
-
     def get_opentext_documents(
         self,
         opentext_nodes: list[int],
@@ -140,26 +131,49 @@ class OpenTextDownloader:
         """
         for node_id in opentext_nodes:
             # Get node info from OpenText API
-            response = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
+            try:
+                response = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
+            except requests.exceptions.HTTPError as err:
+                self.logger.error(f"Failed to get node info for OpenText node {node_id}. {type(err).__name__}: {err}")
+                continue
             node_data = response.json()["data"]
             node_type = node_data["type_name"]
             match node_type:
                 case "Folder":
                     # Get child IDs
-                    children_response = self.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
+                    try:
+                        children_response = self.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
+                    except requests.exceptions.HTTPError as err:
+                        self.logger.error(
+                            f"Failed to get children for OpenText node {node_id}. {type(err).__name__}: {err}"
+                        )
+                        continue
                     children_data = children_response.json()["results"]
                     child_ids = [child["data"]["properties"]["id"] for child in children_data]
                     # Recursively process children
                     yield from self.get_opentext_documents(child_ids, parents=[*parents, node_data["name"]])
                 case "Document":
-                    extension, version_number = self.get_document_extension_version(node_id)
+                    try:
+                        version = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()
+                    except requests.exceptions.HTTPError as err:
+                        self.logger.error(
+                            f"Failed to get version info for OpenText node {node_id}. {type(err).__name__}: {err}"
+                        )
+                        continue
+                    if version["data"]["file_type"]:
+                        extension = "." + version["data"]["file_type"].lower()
+                    elif version["data"]["mime_type"]:
+                        extension = guess_extension(version["data"]["mime_type"])
+                    else:
+                        self.logger.error(f"Failed to determine extension for node {node_id}. {version=}")
+                        continue
                     # Create source URI with extension
                     source_uri = urlunsplit(
                         (
                             prefix,
                             str(node_id),
                             "",
-                            urlencode({"version_number": version_number, "extension": extension}),
+                            urlencode({"version_number": version["data"]["version_number"], "extension": extension}),
                             "",
                         )
                     )

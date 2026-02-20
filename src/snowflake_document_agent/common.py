@@ -25,6 +25,7 @@ def get_console_logger(verbosity: int) -> Logger:
     """Returns a logger object set to the provided level of verbosity (0 for warn, 1 for info, 2 for debug)."""
     LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
     logging_level = LOGGING_LEVELS[min(verbosity, len(LOGGING_LEVELS) - 1)]  # cap to last level index
+    logging.basicConfig(level=logging_level)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging_level)
     formatter = logging.Formatter("%(asctime)s - [%(levelname)s] %(message)s")
