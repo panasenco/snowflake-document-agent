@@ -1,4 +1,5 @@
 import argparse
+from collections.abc import Iterator
 import logging
 from mimetypes import guess_extension
 import os
@@ -126,18 +127,17 @@ class OpenTextDownloader:
         *,
         prefix: str = "opentext",
         parents: list[str] = [],
-    ) -> dict[str, str]:
+    ) -> Iterator[tuple[str, str]]:
         """Discover OpenText documents from specified node IDs.
 
         Args:
             opentext_nodes: List of OpenText node IDs to process
+            prefix: URI prefix (scheme) for the generated URIs
             parents: List of parent folders to construct a display_name containing all the parent folders
 
         Returns:
-            Dictionary mapping source URIs to display_name strings
+            An iterator of (source_uri, display_name) tuples.
         """
-        result = {}
-
         for node_id in opentext_nodes:
             # Get node info from OpenText API
             response = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
@@ -150,8 +150,7 @@ class OpenTextDownloader:
                     children_data = children_response.json()["results"]
                     child_ids = [child["data"]["properties"]["id"] for child in children_data]
                     # Recursively process children
-                    child_documents = self.get_opentext_documents(child_ids, parents=[*parents, node_data["name"]])
-                    result.update(child_documents)
+                    yield from self.get_opentext_documents(child_ids, parents=[*parents, node_data["name"]])
                 case "Document":
                     extension, version_number = self.get_document_extension_version(node_id)
                     # Create source URI with extension
@@ -164,14 +163,12 @@ class OpenTextDownloader:
                             "",
                         )
                     )
-                    result[source_uri] = "/".join([*parents, f"{node_data['name']}.{extension}"])
+                    yield source_uri, "/".join([*parents, f"{node_data['name']}{extension}"])
                 case "Shortcut":
                     # Handle shortcut - follow original_id but preserve shortcut name
                     original_id = node_data["original_id"]
-                    # Get the linked document(s)
-                    original_documents = self.get_opentext_documents([original_id])
-                    # Update the display name with shortcut name instead of original name
-                    for original_uri, original_display_name in original_documents.items():
+                    # Update the display name of linked document(s) with shortcut name instead of original name
+                    for original_uri, original_display_name in self.get_opentext_documents([original_id]):
                         # Replace the first part of the original display name with the shortcut name
                         # If linked to a document, this will replace the full document name
                         # If linked to a folder, this will replace the top folder name
@@ -182,9 +179,7 @@ class OpenTextDownloader:
                         else:
                             display_name_parts[0] = node_data["name"]
                         # Save the new display name
-                        result[original_uri] = "/".join(parents + display_name_parts)
-
-        return result
+                        yield original_uri, "/".join(parents + display_name_parts)
 
     def __call__(self, source_uri: str) -> Path:
         """Downloads an OpenText document and returns its local path."""
