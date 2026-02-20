@@ -1,10 +1,11 @@
 import argparse
 import logging
+from mimetypes import guess_extension
 import os
 from pathlib import Path
 import tempfile
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
@@ -106,91 +107,99 @@ class OpenTextDownloader:
         response.raise_for_status()
         return response
 
+    def get_document_extension_version(self, node_id: int, /) -> tuple[str, str]:
+        """Gets a (extension, version_number) tuple for a document."""
+        version = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()
+        if version["data"]["file_type"]:
+            extension = "." + version["data"]["file_type"].lower()
+        elif version["data"]["mime_type"]:
+            extension = guess_extension(version["data"]["mime_type"])
+        else:
+            raise ValueError(f"Unable to determine extension of OpenText node {node_id}.")
+        return extension, version["data"]["version_number"]
+
+    def get_opentext_documents(
+        self,
+        *,
+        opentext_nodes: list[int],
+        parents: list[str] = [],
+    ) -> dict[str, str]:
+        """Discover OpenText documents from specified node IDs.
+
+        Args:
+            opentext_nodes: List of OpenText node IDs to process
+            parents: List of parent folders to construct a display_name containing all the parent folders
+
+        Returns:
+            Dictionary mapping source URIs to display_name strings
+        """
+        result = {}
+
+        for node_id in opentext_nodes:
+            # Get node info from OpenText API
+            response = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
+            node_data = response.json()["data"]
+            node_type = node_data["type_name"]
+            match node_type:
+                case "Folder":
+                    # Get child IDs
+                    children_response = self.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
+                    children_data = children_response.json()["results"]
+                    child_ids = [child["data"]["properties"]["id"] for child in children_data]
+                    # Recursively process children
+                    child_documents = self.get_opentext_documents(
+                        opentext_nodes=child_ids, parents=[*parents, node_data["name"]]
+                    )
+                    result.update(child_documents)
+                case "Document":
+                    extension, version_number = self.get_document_extension_version(node_id)
+                    # Create source URI with extension
+                    source_uri = urlunsplit(
+                        (
+                            "opentext",
+                            str(node_id),
+                            "",
+                            urlencode({"version_number": version_number, "extension": extension}),
+                            "",
+                        )
+                    )
+                    result[source_uri] = "/".join([*parents, f"{node_data['name']}.{extension}"])
+                case "Shortcut":
+                    # Handle shortcut - follow original_id but preserve shortcut name
+                    original_id = node_data["original_id"]
+                    # Get the linked document(s)
+                    original_documents = self.get_opentext_documents(opentext_nodes=[original_id])
+                    # Update the display name with shortcut name instead of original name
+                    for original_uri, original_display_name in original_documents.items():
+                        # Replace the first part of the original display name with the shortcut name
+                        # If linked to a document, this will replace the full document name
+                        # If linked to a folder, this will replace the top folder name
+                        display_name_parts = original_display_name.split("/")
+                        if "." in display_name_parts[0]:
+                            # Preserve the extension from the original display name
+                            display_name_parts[0] = node_data["name"] + "." + display_name_parts[0].split(".", 1)[1]
+                        else:
+                            display_name_parts[0] = node_data["name"]
+                        # Save the new display name
+                        result[original_uri] = "/".join(parents + display_name_parts)
+
+        return result
+
     def __call__(self, source_uri: str) -> Path:
         """Downloads an OpenText document and returns its local path."""
-        # The 'netloc' part of the URI is of the format [OpenText node id].[extension]
-        opentext_id, extension = urlsplit(source_uri).netloc.split(".", 1)
+        # The 'netloc' part of the URI is the OpenText node ID
+        source_parts = urlsplit(source_uri)
+        opentext_id = source_parts.netloc
+        # The extension is stored in the query part of the URI
+        extension = parse_qs(source_parts.query)["extension"][0]
         # Call OpenText API to get content
         response = self.call("GET", f"opentext/cloud/v1/nodes/{opentext_id}/content")
         # Write content to temporary file with opentext_id prefix and correct extension
-        temp_file = tempfile.NamedTemporaryFile(delete=False, prefix=f"{opentext_id}_", suffix=f".{extension}")
+        temp_file = tempfile.NamedTemporaryFile(delete=False, prefix=f"{opentext_id}_", suffix=extension)
         temp_file.write(response.content)
         temp_file.close()
 
         return Path(temp_file.name)
-
-
-def get_opentext_documents(
-    downloader: OpenTextDownloader,
-    *,
-    opentext_nodes: list[int],
-    parents: list[str] = [],
-) -> dict[str, str]:
-    """Discover OpenText documents from specified node IDs.
-
-    Args:
-        downloader: OpenTextDownloader for making API calls
-        opentext_nodes: List of OpenText node IDs to process
-        parents: List of parent folders to construct a display_name containing all the parent folders
-
-    Returns:
-        Dictionary mapping source URIs to display_name strings
-    """
-    result = {}
-
-    for node_id in opentext_nodes:
-        # Get node info from OpenText API
-        response = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
-        node_data = response.json()["data"]
-        node_type = node_data["type_name"]
-        match node_type:
-            case "Folder":
-                # Get child IDs
-                children_response = downloader.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
-                children_data = children_response.json()["results"]
-                child_ids = [child["data"]["properties"]["id"] for child in children_data]
-                # Recursively process children
-                child_documents = get_opentext_documents(
-                    downloader, opentext_nodes=child_ids, parents=[*parents, node_data["name"]]
-                )
-                result.update(child_documents)
-            case "Document":
-                # Get file extension from versions API (OpenText API quirk)
-                versions = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()["data"]
-                extension = versions["file_type"].lower()
-                # Create source URI with extension
-                source_uri = urlunsplit(
-                    (
-                        "opentext",
-                        f"{node_id}.{extension}",
-                        "",
-                        urlencode({"version_number": versions["version_number"]}),
-                        "",
-                    )
-                )
-                result[source_uri] = "/".join([*parents, f"{node_data['name']}.{extension}"])
-            case "Shortcut":
-                # Get file extension from versions API (OpenText API quirk)
-                versions_response = downloader.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0")
-                extension = versions_response.json()["data"]["file_type"].lower()
-                # Handle shortcut - follow original_id but preserve shortcut name
-                original_id = node_data["original_id"]
-                # Get the linked document(s)
-                original_documents = get_opentext_documents(downloader, opentext_nodes=[original_id])
-                # Update the display name with shortcut name instead of original name
-                for original_uri, original_display_name in original_documents.items():
-                    # Replace the first part of the original display name with the shortcut name
-                    # If linked to a document, this will replace the full document name
-                    # If linked to a folder, this will replace the top folder name
-                    display_name_parts = original_display_name.split("/")
-                    if extension:
-                        display_name_parts[0] = f"{node_data['name']}.{extension}"
-                    else:
-                        display_name_parts[0] = node_data["name"]
-                    # Save the new display name
-                    result[original_uri] = "/".join(parents + display_name_parts)
-
-    return result
 
 
 def main() -> None:

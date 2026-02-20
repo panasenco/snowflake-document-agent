@@ -16,18 +16,19 @@ snowflake.connector.paramstyle = "numeric"
 
 ALL_TABLES = ["document_metadata", "document_text", "document_chunks"]
 # See https://docs.snowflake.com/en/user-guide/snowflake-cortex/parse-document#input-requirements
-CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "txt"}
+CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "html", "txt"}
 
 
 def get_console_logger(level: int) -> Logger:
-  console_handler = StreamHandler()
-  console_handler.setLevel(level)
-  formatter = Formatter('%(asctime)s - [%(levelname)s] %(message)s')
-  console_handler.setFormatter(formatter)
-  logger = getLogger("snowdoc")
-  logger.setLevel(level)
-  logger.addHandler(console_handler)
-  return logger
+    console_handler = StreamHandler()
+    console_handler.setLevel(level)
+    formatter = Formatter("%(asctime)s - [%(levelname)s] %(message)s")
+    console_handler.setFormatter(formatter)
+    logger = getLogger("snowdoc")
+    logger.setLevel(level)
+    logger.addHandler(console_handler)
+    return logger
+
 
 def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
     """Load configuration from YAML file."""
@@ -258,7 +259,7 @@ def process_document(
     with configured_connection.cursor() as cursor:
         document_type = local_path.suffix.removeprefix(".").lower()
         match document_type:
-            case "html" | "txt":
+            case "htm" | "html" | "txt":
                 # Upload the contents directly
                 logger.info(f"Uploading contents of {source_uri} directly...")
                 set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=local_path.read_text())
