@@ -2,6 +2,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from requests.exceptions import HTTPError
 from snowflake_document_agent.ingest_opentext import OpenTextDownloader
 
 
@@ -191,6 +192,128 @@ def test_get_opentext_documents_handles_shortcut():
 
     # Should use shortcut name in display name (shortcut_name.pdf replaces actual_doc.pdf)
     assert display_name == "shortcut_name.pdf"
+
+
+def test_get_opentext_documents_handles_http_errors():
+    """Test that get_opentext_documents handles 404/401 errors gracefully across all API calls and continues processing."""
+    # Create actual OpenTextDownloader instance with mocked authentication
+    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+        # Mock auth response
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_post.return_value = mock_auth_response
+
+        downloader = OpenTextDownloader(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+    # Mock API responses with various error scenarios
+    def mock_call_side_effect(method, path):
+        mock_response = Mock()
+
+        # Node info call errors
+        if path == "opentext/cloud/v1/nodes/404":
+            mock_response.status_code = 404
+            error = HTTPError("404 Client Error: Not Found")
+            error.response = mock_response
+            raise error
+        elif path == "opentext/cloud/v1/nodes/401":
+            mock_response.status_code = 401
+            error = HTTPError("401 Client Error: Unauthorized")
+            error.response = mock_response
+            raise error
+
+        # Folder with children list error (404)
+        elif path == "opentext/cloud/v1/nodes/100":
+            mock_response.json.return_value = {
+                "data": {"id": 100, "name": "folder_404_children", "type_name": "Folder"}
+            }
+        elif path == "opentext/cloud/v2/nodes/100/nodes?limit=1000":
+            mock_response.status_code = 404
+            error = HTTPError("404 Client Error: Not Found")
+            error.response = mock_response
+            raise error
+
+        # Folder with children list error (401)
+        elif path == "opentext/cloud/v1/nodes/101":
+            mock_response.json.return_value = {
+                "data": {"id": 101, "name": "folder_401_children", "type_name": "Folder"}
+            }
+        elif path == "opentext/cloud/v2/nodes/101/nodes?limit=1000":
+            mock_response.status_code = 401
+            error = HTTPError("401 Client Error: Unauthorized")
+            error.response = mock_response
+            raise error
+
+        # Document with version error (404)
+        elif path == "opentext/cloud/v1/nodes/200":
+            mock_response.json.return_value = {"data": {"id": 200, "name": "doc_404_version", "type_name": "Document"}}
+        elif path == "opentext/cloud/v1/nodes/200/versions/0":
+            mock_response.status_code = 404
+            error = HTTPError("404 Client Error: Not Found")
+            error.response = mock_response
+            raise error
+
+        # Document with version error (401)
+        elif path == "opentext/cloud/v1/nodes/201":
+            mock_response.json.return_value = {"data": {"id": 201, "name": "doc_401_version", "type_name": "Document"}}
+        elif path == "opentext/cloud/v1/nodes/201/versions/0":
+            mock_response.status_code = 401
+            error = HTTPError("401 Client Error: Unauthorized")
+            error.response = mock_response
+            raise error
+
+        # Successful document
+        elif path == "opentext/cloud/v1/nodes/300":
+            mock_response.json.return_value = {"data": {"id": 300, "name": "successful_doc", "type_name": "Document"}}
+        elif path == "opentext/cloud/v1/nodes/300/versions/0":
+            mock_response.json.return_value = {"data": {"file_type": "txt", "version_number": 1}}
+
+        return mock_response
+
+    downloader.call = Mock(side_effect=mock_call_side_effect)
+
+    # Mock the logger on the downloader instance
+    mock_logger = Mock()
+    downloader.logger = mock_logger
+
+    # Execute - test all error scenarios: 404 node, 401 node, folder errors, document errors, success
+    docs_generator = downloader.get_opentext_documents(opentext_nodes=[404, 401, 100, 101, 200, 201, 300])
+    docs = list(docs_generator)  # Convert generator to list
+
+    # Should log multiple errors (6 total: 404 node, 401 node, 404 children, 401 children, 404 version, 401 version)
+    assert mock_logger.error.call_count == 6
+
+    # Verify error messages contain relevant information
+    error_calls = [call[0][0] for call in mock_logger.error.call_args_list]
+
+    # Check that we have errors for all the expected scenarios
+    assert any("404" in msg and "node" in msg.lower() for msg in error_calls), "Should have node 404 error"
+    assert any("401" in msg and "node" in msg.lower() for msg in error_calls), "Should have node 401 error"
+    assert any("404" in msg and ("children" in msg.lower() or "folder" in msg.lower()) for msg in error_calls), (
+        "Should have children 404 error"
+    )
+    assert any("401" in msg and ("children" in msg.lower() or "folder" in msg.lower()) for msg in error_calls), (
+        "Should have children 401 error"
+    )
+    assert any("404" in msg and ("version" in msg.lower() or "document" in msg.lower()) for msg in error_calls), (
+        "Should have version 404 error"
+    )
+    assert any("401" in msg and ("version" in msg.lower() or "document" in msg.lower()) for msg in error_calls), (
+        "Should have version 401 error"
+    )
+
+    # Should continue processing and return results only from the successful node (300)
+    assert len(docs) == 1
+    source_uri, display_name = docs[0]
+    assert source_uri.startswith("opentext://300")
+    assert "version_number=1" in source_uri
+    assert "extension=.txt" in source_uri
+    assert display_name == "successful_doc.txt"
 
 
 def test_opentext_downloader_call_basic():
