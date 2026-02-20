@@ -6,6 +6,7 @@ import snowflake.connector
 import yaml
 
 from snowflake_document_agent.common import ALL_TABLES, load_config, clear_stage
+from snowflake_document_agent.ingest_opentext import OpenTextDownloader
 
 
 def pytest_addoption(parser):
@@ -18,6 +19,9 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Use existing schema and truncate test tables instead of creating new schema (DANGEROUS for production!)",
+    )
+    parser.addoption(
+        "--opentext-node-id", action="store", type=int, default=None, help="OpenText node ID for deployment testing"
     )
 
 
@@ -56,6 +60,32 @@ def snowflake_conn(pytestconfig):
         conn.close()
     except Exception as e:
         pytest.fail(f"Failed to connect to Snowflake: {e}")
+
+
+@pytest.fixture(scope="session")
+def opentext_conn(pytestconfig):
+    """
+    Creates an OpenText downloader for deployment tests.
+    Only available when --run-deployment is set to true.
+    Reads configuration from environment variables.
+    Skips gracefully if OpenText credentials are not available.
+    """
+    if not pytestconfig.getoption("--run-deployment"):
+        yield None
+        return
+
+    try:
+        # Create OpenText downloader using environment variables
+        client = OpenTextDownloader()
+        yield client
+    except ValueError as e:
+        # Skip if OpenText credentials are missing
+        if "Missing required OpenText parameters" in str(e):
+            pytest.skip(f"OpenText deployment tests skipped: {e}")
+        else:
+            pytest.fail(f"Failed to create OpenText downloader: {e}")
+    except Exception as e:
+        pytest.fail(f"Failed to create OpenText downloader: {e}")
 
 
 @pytest.fixture(scope="session")
