@@ -1,5 +1,5 @@
 from concurrent.futures import as_completed, ThreadPoolExecutor
-from logging import Logger, getLogger
+from logging import getLogger, Formatter, Logger, StreamHandler
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -18,6 +18,16 @@ ALL_TABLES = ["document_metadata", "document_text", "document_chunks"]
 # See https://docs.snowflake.com/en/user-guide/snowflake-cortex/parse-document#input-requirements
 CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "txt"}
 
+
+def get_console_logger(level: int) -> Logger:
+  console_handler = StreamHandler()
+  console_handler.setLevel(level)
+  formatter = Formatter('%(asctime)s - [%(levelname)s] %(message)s')
+  console_handler.setFormatter(formatter)
+  logger = getLogger("snowdoc")
+  logger.setLevel(level)
+  logger.addHandler(console_handler)
+  return logger
 
 def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
     """Load configuration from YAML file."""
@@ -250,22 +260,31 @@ def process_document(
         match document_type:
             case "html" | "txt":
                 # Upload the contents directly
+                logger.info(f"Uploading contents of {source_uri} directly...")
                 set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=local_path.read_text())
             case "xls" | "xlsx":
                 # Convert Excel to HTML
+                logger.info(f"Converting Excel document {source_uri} to HTML...")
                 document_html = excel_to_html(local_path)
+                logger.info(f"Uploading converted HTML contents of {source_uri} directly...")
                 set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=document_html)
             case "doc" | "docx":
                 # Convert Word to HTML
+                logger.info(f"Converting Word document {source_uri} to HTML...")
                 document_html = word_doc_to_html(local_path)
+                logger.info(f"Uploading converted HTML contents of {source_uri} directly...")
                 set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=document_html)
             case _:
                 # Parse in Snowflake
+                logger.info(f"Uploading document {source_uri} to Snowflake...")
                 stage_path = stage_document(cursor, source_uri=source_uri, local_path=local_path)
+                logger.info(f"Parsing document {source_uri} in Snowflake...")
                 parse_document(cursor, source_uri=source_uri, display_name=display_name, stage_path=stage_path)
         # Generate synthetic metadata
+        logger.info(f"Generating synthetic metadata for document {source_uri}...")
         generate_document_metadata(cursor, source_uri=source_uri, display_name=display_name, config=config)
         # Split the document into chunks
+        logger.info(f"Chunking document {source_uri}...")
         chunk_document(cursor, source_uri=source_uri, display_name=display_name, config=config)
         # Commit
         logger.info(f"Processed {source_uri} - Deleting previous versions of file")
@@ -385,6 +404,7 @@ def process_changed_documents(
     if config is None:
         config = load_config()
     configured_connection = configure_connection(connection, config)
+    logger.info(f"Getting Snowflake documents with {prefix=}...")
     target_uris = get_snowflake_documents(configured_connection, prefix)
     source_uris = set(sources)
     # Delete the removed documents
@@ -403,4 +423,8 @@ def process_changed_documents(
     )
     # Make sure Cortex search services reflect the changes
     if deleted_uris or any_processed:
+        logger.info("Finished processing documents - refreshing search services...")
         refresh_search_services(configured_connection)
+        logger.info("Search services refreshed - all done!")
+    else:
+        logger.info("The documents are already up-to-date - nothing to do!")
