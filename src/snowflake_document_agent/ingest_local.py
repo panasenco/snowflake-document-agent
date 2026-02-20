@@ -1,5 +1,4 @@
 import argparse
-import logging
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -72,9 +71,7 @@ def main() -> None:
         default=0,
     )
     args = parser.parse_args()
-    LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
-    logger = get_console_logger(LOGGING_LEVELS[min(args.verbose, len(LOGGING_LEVELS) - 1)])  # cap to last level index
-    args = parser.parse_args()
+    logger = get_console_logger(args.verbose)
     root_path = Path(args.root_dir)
     logger.info(f"Getting local documents in {root_path}...")
     local_documents = get_local_documents(root_path=root_path, source_name=args.source_name)

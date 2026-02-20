@@ -1,5 +1,6 @@
 from concurrent.futures import as_completed, ThreadPoolExecutor
-from logging import getLogger, Formatter, Logger, StreamHandler
+import logging
+from logging import getLogger, Logger
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -19,13 +20,16 @@ ALL_TABLES = ["document_metadata", "document_text", "document_chunks"]
 CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "html", "txt"}
 
 
-def get_console_logger(level: int) -> Logger:
-    console_handler = StreamHandler()
-    console_handler.setLevel(level)
-    formatter = Formatter("%(asctime)s - [%(levelname)s] %(message)s")
+def get_console_logger(verbosity: int) -> Logger:
+    """Returns a logger object set to the provided level of verbosity (0 for warn, 1 for info, 2 for debug)."""
+    LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
+    logging_level = LOGGING_LEVELS[min(verbosity, len(LOGGING_LEVELS) - 1)]  # cap to last level index
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging_level)
+    formatter = logging.Formatter("%(asctime)s - [%(levelname)s] %(message)s")
     console_handler.setFormatter(formatter)
     logger = getLogger("snowdoc")
-    logger.setLevel(level)
+    logger.setLevel(logging_level)
     logger.addHandler(console_handler)
     return logger
 

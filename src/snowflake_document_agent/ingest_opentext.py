@@ -10,6 +10,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
+from .common import get_console_logger, process_changed_documents
+
 logger = logging.getLogger(__name__)
 
 
@@ -120,8 +122,9 @@ class OpenTextDownloader:
 
     def get_opentext_documents(
         self,
-        *,
         opentext_nodes: list[int],
+        *,
+        prefix: str = "opentext",
         parents: list[str] = [],
     ) -> dict[str, str]:
         """Discover OpenText documents from specified node IDs.
@@ -147,16 +150,14 @@ class OpenTextDownloader:
                     children_data = children_response.json()["results"]
                     child_ids = [child["data"]["properties"]["id"] for child in children_data]
                     # Recursively process children
-                    child_documents = self.get_opentext_documents(
-                        opentext_nodes=child_ids, parents=[*parents, node_data["name"]]
-                    )
+                    child_documents = self.get_opentext_documents(child_ids, parents=[*parents, node_data["name"]])
                     result.update(child_documents)
                 case "Document":
                     extension, version_number = self.get_document_extension_version(node_id)
                     # Create source URI with extension
                     source_uri = urlunsplit(
                         (
-                            "opentext",
+                            prefix,
                             str(node_id),
                             "",
                             urlencode({"version_number": version_number, "extension": extension}),
@@ -168,7 +169,7 @@ class OpenTextDownloader:
                     # Handle shortcut - follow original_id but preserve shortcut name
                     original_id = node_data["original_id"]
                     # Get the linked document(s)
-                    original_documents = self.get_opentext_documents(opentext_nodes=[original_id])
+                    original_documents = self.get_opentext_documents([original_id])
                     # Update the display name with shortcut name instead of original name
                     for original_uri, original_display_name in original_documents.items():
                         # Replace the first part of the original display name with the shortcut name
@@ -221,11 +222,17 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
-    logging.basicConfig(level=LOGGING_LEVELS[min(args.verbose, len(LOGGING_LEVELS) - 1)])
-
-    # TODO: Implement main processing logic
-    raise NotImplementedError("OpenText ingestion pipeline not yet implemented")
+    logger = get_console_logger(args.verbose)
+    opentext_downloader = OpenTextDownloader()
+    logger.info(f"Getting OpenText documents in root nodes {args.node_ids}...")
+    opentext_documents = opentext_downloader.get_opentext_documents(args.node_ids, prefix=args.prefix)
+    process_changed_documents(
+        opentext_documents,
+        connection=args.snowflake_connection,
+        downloader=opentext_downloader,
+        prefix=f"{args.prefix}://",
+        logger=logger,
+    )
 
 
 if __name__ == "__main__":
