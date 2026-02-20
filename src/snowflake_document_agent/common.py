@@ -3,6 +3,7 @@ from logging import Logger, getLogger
 import os
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit, unquote_plus
 
 import mammoth
 import pandas as pd
@@ -58,9 +59,14 @@ def stage_document(
             f"File {local_path} has an unsupported extension. Cortex allows one of: {CORTEX_DOCUMENT_EXTENSIONS}"
         )
     local_path_str = str(local_path.absolute()).replace("\\", "\\\\").replace("'", "\\'")
-    source_path = source_uri.split("://", 1)[-1]
-    stage_parent = source_path.rsplit("/", 1)[0] if "/" in source_path else ""
-    stage_parent_sanitized = stage_parent.replace("'", "\\'")
+    source_uri_parts = urlsplit(source_uri)
+    stage_parent = (
+        (unquote_plus(source_uri_parts.netloc.strip("/")) + "/" + unquote_plus(source_uri_parts.path).strip("/"))
+        .strip("/")
+        .encode("ascii", errors="ignore")
+        .decode()
+    )
+    stage_parent_sanitized = stage_parent.replace("\\", "\\\\").replace("'", "\\'")
     cursor.execute(
         f"put 'file://{local_path_str}' '@documents/{stage_parent_sanitized}' auto_compress=false overwrite=true",
     )
