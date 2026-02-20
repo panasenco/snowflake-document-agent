@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from concurrent.futures import as_completed, ThreadPoolExecutor
 import logging
 from logging import getLogger, Logger
@@ -388,7 +389,7 @@ def refresh_search_services(configured_connection: SnowflakeConnection) -> None:
 
 
 def process_changed_documents(
-    sources: dict[str, str],
+    sources: Iterable[tuple[str, str]],
     *,
     connection: SnowflakeConnection | str = "default",
     downloader: Callable[[str], Path],
@@ -398,20 +399,47 @@ def process_changed_documents(
     logger: Logger = getLogger(),
 ) -> None:
     """Process just the documents that have changed since the last ingestion into Snowflake.
-    Accepts a dictionary with source_uri's as keys and display_name's as the values.
+    Accepts an iterable (list or generator) of (source_uri, display_name) tuples.
     Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
     Accepts a Snowflake connection as either a connection name (string) or a connection object.
     Deletes the documents matching the prefix that are only in Snowflake and no longer in the source.
-    Ingests (insert=True) new documents matching the prefix into Snowflake.
-    Reingests (insert=False) documents matching the prefix that have newer modification timestamps or different metadata
-      strings into Snowflake.
+    Ingests new or updated documents matching the prefix into Snowflake.
+    Deletes old versions of successfully ingested documents, if any.
     """
     if config is None:
         config = load_config()
     configured_connection = configure_connection(connection, config)
     logger.info(f"Getting Snowflake documents with {prefix=}...")
     target_uris = get_snowflake_documents(configured_connection, prefix)
-    source_uris = set(sources)
+    any_processed = False
+    clear_stage(configured_connection)
+    with ThreadPoolExecutor(max_workers) as executor:
+        future_uris = {}
+        while True:
+            if len(future_uris) < max_workers:
+                future = executor.submit(
+                    process_document,
+                    configured_connection,
+                    source_uri,
+                    display_name,
+                    downloader,
+                    config,
+                    logger,
+                )
+                future_uris[future] = source_uri
+            else:
+                done, _ = wait(future_uris, return_when=ALL_COMPLETED)
+                for future in done:
+                    source_uri = future_uris[future]
+                    del future_uris[future]
+                    try:
+                        future.result()
+                        any_processed = True
+                    except Exception as err:
+                        logger.error(f"Error processing {source_uri} - deleting from database. {type(err).__name__}: {err}")
+                        delete_document(configured_connection, source_uri)
+
+    return any_processed
     # Delete the removed documents
     deleted_uris = target_uris - source_uris
     for source_uri in deleted_uris:
