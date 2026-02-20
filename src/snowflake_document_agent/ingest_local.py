@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-from .common import process_changed_documents
+from .common import get_console_logger, process_changed_documents
 
 
 def get_local_documents(root_path: Path, source_name: str = "") -> dict[str, str]:
@@ -73,15 +73,17 @@ def main() -> None:
     )
     args = parser.parse_args()
     LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
-    logging.basicConfig(level=LOGGING_LEVELS[min(args.verbose, len(LOGGING_LEVELS) - 1)])  # cap to last level index
+    logger = get_console_logger(LOGGING_LEVELS[min(args.verbose, len(LOGGING_LEVELS) - 1)])  # cap to last level index
     args = parser.parse_args()
     root_path = Path(args.root_dir)
+    logger.info(f"Getting local documents in {root_path}...")
     local_documents = get_local_documents(root_path=root_path, source_name=args.source_name)
     process_changed_documents(
         local_documents,
         connection=args.snowflake_connection,
         downloader=local_downloader,
         prefix=f"file://{args.source_name}",
+        logger=logger,
     )
 
 
