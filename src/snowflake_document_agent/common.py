@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from concurrent.futures import as_completed, ThreadPoolExecutor
+from concurrent.futures import wait, ThreadPoolExecutor, FIRST_COMPLETED
 import logging
 from logging import getLogger, Logger
 import os
@@ -316,50 +316,6 @@ def delete_document(
             cursor.execute(f"delete from {table} where source_uri = :1", (source_uri,))
 
 
-def process_documents(
-    configured_connection: SnowflakeConnection,
-    sources: dict[str, str],
-    *,
-    downloader: Callable[[str], Path],
-    config: dict[str, Any],
-    max_workers: int = 8,
-    logger: Logger = getLogger(),
-    reraise: bool = False,
-) -> bool:
-    """Process documents end-to-end in parallel.
-    Returns True if any documents were successfully processed, False otherwise.
-    Requires a Snowflake connection as either a direct connection object or a string connection name.
-    Requires a dictionary of sources with source_uri's as keys and display_name's as values.
-    Requires a callable downloader that returns a source_uri's local downloaded path.
-    Displays a progress bar.
-    Doesn't crash when a document fails to process, but displays detailed information about the error.
-    """
-    any_processed = False
-    clear_stage(configured_connection)
-    with ThreadPoolExecutor(max_workers) as executor:
-        future_uris = {
-            executor.submit(
-                process_document,
-                configured_connection,
-                source_uri,
-                display_name,
-                downloader,
-                config,
-                logger,
-            ): source_uri
-            for source_uri, display_name in sources.items()
-        }
-        for future in as_completed(future_uris):
-            source_uri = future_uris[future]
-            try:
-                future.result()
-                any_processed = True
-            except Exception as err:
-                logger.error(f"Error processing {source_uri} - deleting from database. {type(err).__name__}: {err}")
-                delete_document(configured_connection, source_uri)
-    return any_processed
-
-
 def get_snowflake_documents(
     configured_connection: SnowflakeConnection,
     prefix: str,
@@ -406,58 +362,72 @@ def process_changed_documents(
     Ingests new or updated documents matching the prefix into Snowflake.
     Deletes old versions of successfully ingested documents, if any.
     """
+    sources_iterator = iter(sources)
     if config is None:
         config = load_config()
     configured_connection = configure_connection(connection, config)
     logger.info(f"Getting Snowflake documents with {prefix=}...")
     target_uris = get_snowflake_documents(configured_connection, prefix)
+    source_uris = set()
     any_processed = False
+    delete_missing_uris = False
     clear_stage(configured_connection)
     with ThreadPoolExecutor(max_workers) as executor:
         future_uris = {}
-        while True:
-            if len(future_uris) < max_workers:
-                future = executor.submit(
-                    process_document,
-                    configured_connection,
-                    source_uri,
-                    display_name,
-                    downloader,
-                    config,
-                    logger,
-                )
-                future_uris[future] = source_uri
-            else:
-                done, _ = wait(future_uris, return_when=ALL_COMPLETED)
+        sources_remaining = True
+        while sources_remaining or len(future_uris) > 0:
+            if sources_remaining and len(future_uris) < max_workers:
+                try:
+                    logger.debug(f"Getting next source. {sources_remaining=}, {len(future_uris)=}, {max_workers=}")
+                    source_uri, display_name = next(sources_iterator)
+                    source_uris.add(source_uri)
+                except StopIteration:
+                    sources_remaining = False
+                    logger.debug(f"All sources present, will delete missing. {len(source_uris)=}, {len(target_uris)=}")
+                    delete_missing_uris = True
+                except Exception as err:
+                    logger.error(f"Error fetching the next source in iterator - aborting. {type(err).__name__}: {err}")
+                    sources_remaining = False
+                if sources_remaining:
+                    if source_uri in target_uris:
+                        logger.debug(f"Source {source_uri} already present in Snowflake - skipping processing...")
+                    else:
+                        logger.info(f"Source {source_uri} not in Snowflake - submitting for processing...")
+                        future = executor.submit(
+                            process_document,
+                            configured_connection,
+                            source_uri,
+                            display_name,
+                            downloader,
+                            config,
+                            logger,
+                        )
+                        future_uris[future] = source_uri
+            elif len(future_uris) > 0:
+                logger.debug(f"Waiting for next future. {len(future_uris)=}")
+                done, _ = wait(future_uris, return_when=FIRST_COMPLETED)
                 for future in done:
                     source_uri = future_uris[future]
+                    logger.debug(f"Future for {source_uri=} completed, deleting from future_uris and getting result.")
                     del future_uris[future]
                     try:
                         future.result()
                         any_processed = True
                     except Exception as err:
-                        logger.error(f"Error processing {source_uri} - deleting from database. {type(err).__name__}: {err}")
+                        logger.error(
+                            f"Error processing {source_uri} - deleting from database. {type(err).__name__}: {err}"
+                        )
                         delete_document(configured_connection, source_uri)
 
-    return any_processed
     # Delete the removed documents
-    deleted_uris = target_uris - source_uris
+    deleted_uris = (target_uris - source_uris) if delete_missing_uris else set()
     for source_uri in deleted_uris:
-        logger.info(f"Deleting document {source_uri} from Snowflake...")
+        logger.info(f"Deleting removed document {source_uri} from Snowflake...")
         delete_document(configured_connection, source_uri)
-    # Process the updated documents
-    any_processed = process_documents(
-        configured_connection,
-        {source_uri: sources[source_uri] for source_uri in (source_uris - target_uris)},
-        downloader=downloader,
-        config=config,
-        max_workers=max_workers,
-        logger=logger,
-    )
     # Make sure Cortex search services reflect the changes
     if deleted_uris or any_processed:
         logger.info("Finished processing documents - refreshing search services...")
         refresh_search_services(configured_connection)
         logger.info("Search services refreshed - all done!")
     else:
-        logger.info("The documents are already up-to-date - nothing to do!")
+        logger.info("No documents processed or deleted.")
