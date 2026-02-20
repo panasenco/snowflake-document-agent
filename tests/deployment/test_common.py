@@ -1031,6 +1031,146 @@ def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
 
 
 @pytest.mark.deployment
+def test_stage_document_edge_cases(snowflake_conn, test_schema, tmp_path):
+    """
+    Test that stage_document properly parses URI edge cases with tricky filenames.
+    The staging document path should be [netloc]/[path] if the URI has a netloc,
+    and just [path (without leading /)] otherwise. Query parameters should be stripped.
+    URL-encoded identifiers should be properly unescaped.
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    with snowflake_conn.cursor() as cursor:
+        # Create a test document with tricky filename including backslash and single quote
+        test_file = tmp_path / "File&With=Special@Chars\\and'quotes.txt"
+        test_file.write_text("Test document content for URI edge case testing.")
+
+        # Test Case 1: URI with URL-encoded spaces and query parameters (OpenText-style)
+        source_uri_encoded_spaces = "opentext://My%20Document%20With%20Spaces.pdf?version_number=1&other_param=value"
+        stage_path_encoded_spaces = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_encoded_spaces,
+            local_path=test_file,
+        )
+
+        # Expected: URL-decode "My%20Document%20With%20Spaces.pdf" as folder + local filename
+        expected_encoded_spaces = "My Document With Spaces.pdf/File&With=Special@Chars\\and'quotes.txt"
+        print(f"URI with encoded spaces: {source_uri_encoded_spaces}")
+        print(f"Actual stage path: '{stage_path_encoded_spaces}', Expected: '{expected_encoded_spaces}'")
+
+        # Test Case 2: URI with URL-encoded quotes and special chars in netloc
+        source_uri_encoded_quotes = "opentext://Doc%27s%20File%20%26%20More.docx"
+        stage_path_encoded_quotes = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_encoded_quotes,
+            local_path=test_file,
+        )
+
+        # Expected: URL-decode "Doc%27s%20File%20%26%20More.docx" as folder + local filename
+        expected_encoded_quotes = "Doc's File & More.docx/File&With=Special@Chars\\and'quotes.txt"
+        print(f"URI with encoded quotes: {source_uri_encoded_quotes}")
+        print(f"Actual stage path: '{stage_path_encoded_quotes}', Expected: '{expected_encoded_quotes}'")
+
+        # Test Case 3: Unescaped URI with special characters (should work as-is)
+        source_uri_unescaped = "test://bucket/folder/File&With=Special@Chars.txt"
+        stage_path_unescaped = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_unescaped,
+            local_path=test_file,
+        )
+
+        # Expected: netloc "bucket", path "/folder/File&With=Special@Chars.txt" + local filename
+        # Result: "bucket/folder/File&With=Special@Chars.txt/File&With=Special@Chars\and'quotes.txt"
+        expected_unescaped = "bucket/folder/File&With=Special@Chars.txt/File&With=Special@Chars\\and'quotes.txt"
+        print(f"Unescaped URI: {source_uri_unescaped}")
+        print(f"Actual stage path: '{stage_path_unescaped}', Expected: '{expected_unescaped}'")
+
+        # Test Case 4: Mixed encoding in path and query
+        source_uri_mixed = (
+            "test://my-bucket/path%20with%20spaces/doc's%20file.pdf?timestamp=2024%2D01%2D01&user=john%40example.com"
+        )
+        stage_path_mixed = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_mixed,
+            local_path=test_file,
+        )
+
+        # Expected: netloc "my-bucket", path "/path with spaces/doc's file.pdf" (decoded) + local filename
+        # Query params should be stripped
+        expected_mixed = "my-bucket/path with spaces/doc's file.pdf/File&With=Special@Chars\\and'quotes.txt"
+        print(f"Mixed encoding URI: {source_uri_mixed}")
+        print(f"Actual stage path: '{stage_path_mixed}', Expected: '{expected_mixed}'")
+
+        # Test Case 5: File URI with encoded path
+        source_uri_file_encoded = "file:///home/user/My%20Documents/Important%20File.txt"
+        stage_path_file_encoded = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_file_encoded,
+            local_path=test_file,
+        )
+
+        # Expected: no netloc, decode path "/home/user/My Documents/Important File.txt" + local filename
+        # Remove leading slash: "home/user/My Documents/Important File.txt/File&With=Special@Chars\and'quotes.txt"
+        expected_file_encoded = "home/user/My Documents/Important File.txt/File&With=Special@Chars\\and'quotes.txt"
+        print(f"Encoded file URI: {source_uri_file_encoded}")
+        print(f"Actual stage path: '{stage_path_file_encoded}', Expected: '{expected_file_encoded}'")
+
+        # Test Case 6: Unicode characters (should handle properly)
+        source_uri_unicode = "test://bucket/docs/Résumé_François_Müller.pdf?version=1"
+        stage_path_unicode = stage_document(
+            cursor=cursor,
+            source_uri=source_uri_unicode,
+            local_path=test_file,
+        )
+
+        # Expected: Unicode chars replaced with question marks for Snowflake stage naming rules
+        expected_unicode = "bucket/docs/Rsum_Franois_Mller.pdf/File&With=Special@Chars\\and'quotes.txt"
+        print(f"Unicode URI: {source_uri_unicode}")
+        print(f"Actual stage path: '{stage_path_unicode}', Expected: '{expected_unicode}'")
+
+        # Assertions - These demonstrate the expected behavior
+        # Note: Many will fail with current implementation due to improper URI parsing
+
+        # Query parameters should be stripped from all URIs
+        for stage_path, test_name in [
+            (stage_path_encoded_spaces, "encoded_spaces"),
+            (stage_path_mixed, "mixed"),
+            (stage_path_unicode, "unicode"),
+        ]:
+            assert "?" not in stage_path, f"{test_name}: Stage path should not contain query parameters: '{stage_path}'"
+
+        # URL-encoded characters should be unescaped
+        assert stage_path_encoded_spaces == expected_encoded_spaces, (
+            f"Expected '{expected_encoded_spaces}', got '{stage_path_encoded_spaces}'"
+        )
+        assert stage_path_encoded_quotes == expected_encoded_quotes, (
+            f"Expected '{expected_encoded_quotes}', got '{stage_path_encoded_quotes}'"
+        )
+
+        # Unescaped URIs should work as-is
+        assert stage_path_unescaped == expected_unescaped, (
+            f"Expected '{expected_unescaped}', got '{stage_path_unescaped}'"
+        )
+
+        # Mixed encoding should be properly handled
+        assert stage_path_mixed == expected_mixed, f"Expected '{expected_mixed}', got '{stage_path_mixed}'"
+
+        # File URIs should decode path and remove leading slash
+        assert stage_path_file_encoded == expected_file_encoded, (
+            f"Expected '{expected_file_encoded}', got '{stage_path_file_encoded}'"
+        )
+
+        # Unicode should be preserved
+        assert stage_path_unicode == expected_unicode, f"Expected '{expected_unicode}', got '{stage_path_unicode}'"
+
+        # Verify files were actually staged (basic functionality check)
+        cursor.execute("LIST @documents")
+        staged_files = cursor.fetchall()
+        assert len(staged_files) >= 6, f"Expected at least 6 staged files, found {len(staged_files)}"
+
+
+@pytest.mark.deployment
 def test_refresh_search_services(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test refresh_search_services function - should refresh both Cortex search services with latest data.
