@@ -319,20 +319,20 @@ def delete_document(
 def get_snowflake_documents(
     configured_connection: SnowflakeConnection,
     prefix: str,
-) -> set[str]:
+) -> dict[str, str]:
     """Get information about the documents currently in Snowflake.
     Accepts an already-configured (role, warehouse, schema set) connection object.
-    Returns a set of source_uri's.
+    Returns a dictionary with source_uri's as the keys and display_name's as the values.
     Filter on source_uri prefixes, e.g. "local://" for URIs like "local://path/to/the/file".
     The prefix can also be used to filter for subfolders, e.g. "local://path/to".
     """
     with configured_connection.cursor() as cursor:
         # Query document_metadata table for documents matching the prefix
         cursor.execute(
-            "select source_uri from document_metadata where source_uri like :1",
+            "select source_uri, display_name from document_metadata where source_uri like :1",
             (prefix + "%",),
         )
-        return {row[0] for row in cursor}
+        return {row[0]: row[1] for row in cursor}
 
 
 def refresh_search_services(configured_connection: SnowflakeConnection) -> None:
@@ -342,6 +342,20 @@ def refresh_search_services(configured_connection: SnowflakeConnection) -> None:
     with configured_connection.cursor() as cursor:
         for search_service in ["search_metadata", "search_contents"]:
             cursor.execute(f"alter cortex search service if exists {search_service} refresh")
+
+
+def update_display_name(
+    configured_connection: SnowflakeConnection,
+    source_uri: str,
+    display_name: str,
+    /,
+) -> None:
+    """Changes the display_name for a source_uri in all tables.
+    Accepts an already-configured (role, warehouse, schema set) connection object.
+    """
+    with configured_connection.cursor() as cursor:
+        for table in ALL_TABLES:
+            cursor.execute(f"update {table} set display_name = :2 where source_uri = :1", (source_uri, display_name))
 
 
 def process_changed_documents(
@@ -367,7 +381,7 @@ def process_changed_documents(
         config = load_config()
     configured_connection = configure_connection(connection, config)
     logger.info(f"Getting Snowflake documents with {prefix=}...")
-    target_uris = get_snowflake_documents(configured_connection, prefix)
+    targets = get_snowflake_documents(configured_connection, prefix)
     source_uris = set()
     any_processed = False
     delete_missing_uris = False
@@ -383,14 +397,19 @@ def process_changed_documents(
                     source_uris.add(source_uri)
                 except StopIteration:
                     sources_remaining = False
-                    logger.debug(f"All sources present, will delete missing. {len(source_uris)=}, {len(target_uris)=}")
+                    logger.debug(f"All sources present, will delete missing. {len(source_uris)=}, {len(targets)=}")
                     delete_missing_uris = True
                 except Exception as err:
                     logger.error(f"Error fetching the next source in iterator - aborting. {type(err).__name__}: {err}")
                     sources_remaining = False
                 if sources_remaining:
-                    if source_uri in target_uris:
+                    if source_uri in targets:
                         logger.debug(f"Source {source_uri} already present in Snowflake - skipping processing...")
+                        if targets[source_uri] != display_name:
+                            logger.info(
+                                f"Updating display name for {source_uri} from {targets[source_uri]} to {display_name}..."
+                            )
+                            update_display_name(configured_connection, source_uri, display_name)
                     else:
                         logger.info(f"Source {source_uri} not in Snowflake - submitting for processing...")
                         future = executor.submit(
@@ -420,7 +439,7 @@ def process_changed_documents(
                         delete_document(configured_connection, source_uri)
 
     # Delete the removed documents
-    deleted_uris = (target_uris - source_uris) if delete_missing_uris else set()
+    deleted_uris = (set(targets) - source_uris) if delete_missing_uris else set()
     for source_uri in deleted_uris:
         logger.info(f"Deleting removed document {source_uri} from Snowflake...")
         delete_document(configured_connection, source_uri)
