@@ -12,7 +12,6 @@ from snowflake_document_agent.common import (
     generate_document_metadata,
     chunk_document,
     clear_stage,
-    process_documents,
     process_changed_documents,
     delete_document,
     get_snowflake_documents,
@@ -428,9 +427,9 @@ def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path
 
 
 @pytest.mark.deployment
-def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path):
+def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path):
     """
-    Comprehensive test: throw everything at process_documents and verify it handles gracefully.
+    Comprehensive test: throw everything at process_changed_documents and verify it handles gracefully.
     Tests all document types, nonexistent files, bad extensions, and corrupted files.
     """
     if not snowflake_conn:
@@ -483,17 +482,26 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
     excel_fixture = Path(__file__).parent.parent / "fixtures" / "multi-worksheet.xlsx"
     shutil.copy(excel_fixture, excel_as_pdf)
 
-    # Create sources dictionary with URI format including query parameters
-    sources = {
-        f"test://kitchen/success.txt?timestamp={txt_timestamp}": "Success Text File",
-        f"test://kitchen/success.html?timestamp={html_timestamp}": "Success HTML File",
-        f"test://kitchen/cuad-sponsorship.pdf?timestamp={pdf_timestamp}": "CUAD Sponsorship PDF",
-        f"test://kitchen/mammoth-tables.docx?timestamp={docx_timestamp}": "Mammoth Tables DOCX",
-        f"test://kitchen/multi-worksheet.xlsx?timestamp={xlsx_timestamp}": "Multi Worksheet XLSX",
-        f"test://kitchen/missing.txt?timestamp={int(datetime(2024, 1, 6, 12, 0, 0, tzinfo=timezone.utc).timestamp())}": "Missing Text File",
-        f"test://kitchen/bad_extension.xyz?timestamp={int(datetime(2024, 1, 7, 13, 0, 0, tzinfo=timezone.utc).timestamp())}": "Bad Extension File",
-        f"test://kitchen/actually_excel.pdf?timestamp={int(datetime(2024, 1, 8, 14, 0, 0, tzinfo=timezone.utc).timestamp())}": "Corrupted PDF File",
-    }
+    # Create sources list of tuples for new process_changed_documents API
+    sources = [
+        (f"test://kitchen/success.txt?timestamp={txt_timestamp}", "Success Text File"),
+        (f"test://kitchen/success.html?timestamp={html_timestamp}", "Success HTML File"),
+        (f"test://kitchen/cuad-sponsorship.pdf?timestamp={pdf_timestamp}", "CUAD Sponsorship PDF"),
+        (f"test://kitchen/mammoth-tables.docx?timestamp={docx_timestamp}", "Mammoth Tables DOCX"),
+        (f"test://kitchen/multi-worksheet.xlsx?timestamp={xlsx_timestamp}", "Multi Worksheet XLSX"),
+        (
+            f"test://kitchen/missing.txt?timestamp={int(datetime(2024, 1, 6, 12, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Missing Text File",
+        ),
+        (
+            f"test://kitchen/bad_extension.xyz?timestamp={int(datetime(2024, 1, 7, 13, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Bad Extension File",
+        ),
+        (
+            f"test://kitchen/actually_excel.pdf?timestamp={int(datetime(2024, 1, 8, 14, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Corrupted PDF File",
+        ),
+    ]
 
     # Create test downloader function
     def test_downloader(source_uri: str) -> Path:
@@ -520,13 +528,14 @@ def test_process_documents_kitchen_sink(snowflake_conn, test_schema, test_config
         else:
             raise ValueError(f"Unknown URI: {source_uri}")
 
-    # Execute process_documents - should not crash despite failures
-    process_documents(
-        snowflake_conn,
+    # Execute process_changed_documents - should not crash despite failures
+    process_changed_documents(
         sources,
+        connection=snowflake_conn,
         downloader=test_downloader,
+        prefix="test://kitchen/",
         config=test_config,
-        max_workers=1,  # Use sequential processing for testing
+        max_workers=4,  # Use parallel processing for testing
         logger=mock_logger,
     )
 
@@ -738,19 +747,29 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
 
     # === SETUP: Initial state in Snowflake ===
     # Create initial documents using the new URI format with query parameters
-    initial_sources = {
-        f"test://project/doc1.txt?timestamp={int(datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp())}": "Document 1",
-        f"test://project/doc2.pdf?timestamp={int(datetime(2024, 1, 2, 11, 0, 0, tzinfo=timezone.utc).timestamp())}": "Document 2",
-        f"test://project/old_doc.docx?timestamp={int(datetime(2024, 1, 3, 12, 0, 0, tzinfo=timezone.utc).timestamp())}": "Old Document",
-    }
+    initial_sources = [
+        (
+            f"test://project/doc1.txt?timestamp={int(datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Document 1",
+        ),
+        (
+            f"test://project/doc2.pdf?timestamp={int(datetime(2024, 1, 2, 11, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Document 2",
+        ),
+        (
+            f"test://project/old_doc.docx?timestamp={int(datetime(2024, 1, 3, 12, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Old Document",
+        ),
+    ]
 
     # Process initial documents
-    process_documents(
-        snowflake_conn,
+    process_changed_documents(
         initial_sources,
+        connection=snowflake_conn,
         downloader=mock_downloader,
+        prefix=prefix,
         config=test_config,
-        max_workers=1,
+        max_workers=4,
     )
 
     # Verify initial setup worked
@@ -759,16 +778,28 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
 
     # === TEST: Current source documents ===
     # This represents the "current state" of the source system
-    current_sources = {
+    current_sources = [
         # doc1: EXISTS in Snowflake - should be SKIPPED (no timestamp-based change detection)
-        f"test://project/doc1.txt?timestamp={int(datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp())}": "Document 1",
+        (
+            f"test://project/doc1.txt?timestamp={int(datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Document 1",
+        ),
         # doc2: EXISTS in Snowflake - should be SKIPPED
-        f"test://project/doc2.pdf?timestamp={int(datetime(2024, 1, 2, 11, 0, 0, tzinfo=timezone.utc).timestamp())}": "Document 2",
+        (
+            f"test://project/doc2.pdf?timestamp={int(datetime(2024, 1, 2, 11, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Document 2",
+        ),
         # doc3: NEW - doesn't exist in Snowflake - should be PROCESSED
-        f"test://project/doc3.xlsx?timestamp={int(datetime(2024, 1, 4, 14, 0, 0, tzinfo=timezone.utc).timestamp())}": "Document 3",
+        (
+            f"test://project/doc3.xlsx?timestamp={int(datetime(2024, 1, 4, 14, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Document 3",
+        ),
         # doc4: NEW - doesn't exist in Snowflake - should be PROCESSED
-        f"test://project/doc4.html?timestamp={int(datetime(2024, 1, 5, 16, 0, 0, tzinfo=timezone.utc).timestamp())}": "Document 4",
-    }
+        (
+            f"test://project/doc4.html?timestamp={int(datetime(2024, 1, 5, 16, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Document 4",
+        ),
+    ]
     # Note: old_doc.docx is in Snowflake but not in current_sources, so should be DELETED
 
     mock_logger = MagicMock()
@@ -782,7 +813,7 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
             downloader=mock_downloader,
             prefix=prefix,
             config=test_config,
-            max_workers=1,
+            max_workers=4,
             logger=mock_logger,
         )
 
@@ -810,7 +841,7 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
     assert len(final_docs) == 4, f"Expected 4 documents after processing, got {len(final_docs)}: {sorted(final_docs)}"
 
     # Verify the URIs we expect are present
-    expected_uris = set(current_sources.keys())
+    expected_uris = {uri for uri, _ in current_sources}
     assert final_docs == expected_uris, f"Expected URIs {sorted(expected_uris)}, got {sorted(final_docs)}"
 
     # Verify logging behavior - should log deletions and new docs
@@ -861,13 +892,13 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
 
 
 @pytest.mark.deployment
-def test_process_documents_orphaned_data_bug(snowflake_conn, test_schema, test_config, tmp_path):
+def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema, test_config, tmp_path):
     """
-    Test for orphaned data bug at process_documents level: when document processing fails at a later stage,
+    Test for orphaned data bug at process_changed_documents level: when document processing fails at a later stage,
     ensure no partial data is left in ANY table (document_text, document_metadata, document_chunks).
 
     This test uses a valid text file but corrupts the config to cause chunking to fail after earlier steps succeed.
-    This validates that process_documents properly cleans up orphaned data from earlier pipeline stages.
+    This validates that process_changed_documents properly cleans up orphaned data from earlier pipeline stages.
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
@@ -887,20 +918,20 @@ def test_process_documents_orphaned_data_bug(snowflake_conn, test_schema, test_c
     # Corrupt the config to make chunking fail (chunk_size must be int, not string)
     test_config["chunk_size"] = "invalid_string_value"  # This will cause chunking to fail
 
-    # Try to process the document using process_documents (which has rollback functionality)
-    sources = {source_uri: display_name}
+    # Try to process the document using process_changed_documents (which has rollback functionality)
+    sources = [(source_uri, display_name)]
 
-    # process_documents doesn't raise exceptions for individual doc failures - it handles them gracefully
-    result = process_documents(
-        snowflake_conn,
+    # process_changed_documents doesn't raise exceptions for individual doc failures - it handles them gracefully
+    process_changed_documents(
         sources,
+        connection=snowflake_conn,
         downloader=mock_downloader,
+        prefix="test://orphaned/",
         config=test_config,
         max_workers=1,  # Use single worker to ensure predictable behavior
     )
 
-    # Should return False since no documents were successfully processed
-    assert result is False, "Expected process_documents to return False when all documents fail"
+    # No return value check needed since process_changed_documents doesn't return a boolean
 
     # === VERIFY NO ORPHANED DATA ===
     # The bug is that failed documents leave partial data in some tables but not others
@@ -915,7 +946,7 @@ def test_process_documents_orphaned_data_bug(snowflake_conn, test_schema, test_c
             print(f"DEBUG: {table} contains {count} entries for failed document")
             assert count == 0, f"Failed document should not be in {table}, found {count} entries (ORPHANED DATA BUG)"
 
-    print("✅ Orphaned data test passed - no partial data left from failed process_documents!")
+    print("✅ Orphaned data test passed - no partial data left from failed process_changed_documents!")
 
 
 @pytest.mark.deployment
