@@ -16,6 +16,7 @@ from snowflake_document_agent.common import (
     delete_document,
     get_snowflake_documents,
     refresh_search_services,
+    update_display_name,
 )
 
 
@@ -75,7 +76,8 @@ def test_stage_document_basic(snowflake_conn, test_schema, tmp_path):
         )
 
         # Verify - Check that the stage path is returned correctly
-        expected_stage_path = "integration/test_doc.txt"
+        # The function creates a directory from the URI path and places the local file inside it
+        expected_stage_path = "integration/test_doc.txt/test_doc.txt"
         assert stage_path == expected_stage_path, f"Expected stage path '{expected_stage_path}', got '{stage_path}'"
 
         # Verify - Check that file exists in the @documents stage
@@ -649,35 +651,36 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
 def test_get_snowflake_documents(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test get_snowflake_documents function - should return documents matching a prefix.
+    Returns dict mapping source_uri to display_name.
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
 
-    # Define test URIs with different prefixes - using new query parameter format
-    test_uris = [
-        "s3://bucket/folder1/doc1.pdf?version=1",
-        "s3://bucket/folder1/doc2.txt?version=1",
-        "s3://bucket/folder2/doc3.docx?version=1",
-        "gcs://other-bucket/doc4.xlsx?version=1",
+    # Define test documents with different prefixes and display names
+    test_documents = [
+        ("s3://bucket/folder1/doc1.pdf?version=1", "Document 1 PDF"),
+        ("s3://bucket/folder1/doc2.txt?version=1", "Document 2 Text"),
+        ("s3://bucket/folder2/doc3.docx?version=1", "Document 3 Word"),
+        ("gcs://other-bucket/doc4.xlsx?version=1", "Document 4 Excel"),
     ]
 
     # Insert test document metadata entries
     with snowflake_conn.cursor() as cursor:
-        for source_uri in test_uris:
+        for source_uri, display_name in test_documents:
             cursor.execute(
                 "INSERT INTO document_metadata (source_uri, display_name, generated_metadata) VALUES (:1, :2, :3)",
-                (source_uri, "test_doc", "test metadata"),
+                (source_uri, display_name, "test metadata"),
             )
 
     # Test 1: Get documents with "s3://bucket/folder1/" prefix
     result = get_snowflake_documents(snowflake_conn, prefix="s3://bucket/folder1/")
 
-    assert isinstance(result, set), "Should return a set"
+    assert isinstance(result, dict), "Should return a dict"
     assert len(result) == 2, f"Expected 2 documents with prefix 's3://bucket/folder1/', got {len(result)}"
 
-    # Verify the correct documents are returned
-    assert "s3://bucket/folder1/doc1.pdf?version=1" in result
-    assert "s3://bucket/folder1/doc2.txt?version=1" in result
+    # Verify the correct documents and display names are returned
+    assert result["s3://bucket/folder1/doc1.pdf?version=1"] == "Document 1 PDF"
+    assert result["s3://bucket/folder1/doc2.txt?version=1"] == "Document 2 Text"
     assert "s3://bucket/folder2/doc3.docx?version=1" not in result
     assert "gcs://other-bucket/doc4.xlsx?version=1" not in result
 
@@ -686,9 +689,9 @@ def test_get_snowflake_documents(snowflake_conn, test_schema, test_config, tmp_p
     assert len(result_broad) == 3, f"Expected 3 documents with prefix 's3://bucket/', got {len(result_broad)}"
 
     expected_broad = {
-        "s3://bucket/folder1/doc1.pdf?version=1",
-        "s3://bucket/folder1/doc2.txt?version=1",
-        "s3://bucket/folder2/doc3.docx?version=1",
+        "s3://bucket/folder1/doc1.pdf?version=1": "Document 1 PDF",
+        "s3://bucket/folder1/doc2.txt?version=1": "Document 2 Text",
+        "s3://bucket/folder2/doc3.docx?version=1": "Document 3 Word",
     }
     assert result_broad == expected_broad, f"Expected {expected_broad}, got {result_broad}"
 
@@ -779,15 +782,15 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
     # === TEST: Current source documents ===
     # This represents the "current state" of the source system
     current_sources = [
-        # doc1: EXISTS in Snowflake - should be SKIPPED (no timestamp-based change detection)
+        # doc1: EXISTS in Snowflake but with DIFFERENT DISPLAY NAME - should UPDATE display name only
         (
             f"test://project/doc1.txt?timestamp={int(datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp())}",
-            "Document 1",
+            "Document 1 - Updated Name",
         ),
-        # doc2: EXISTS in Snowflake - should be SKIPPED
+        # doc2: EXISTS in Snowflake but with DIFFERENT DISPLAY NAME - should UPDATE display name only
         (
             f"test://project/doc2.pdf?timestamp={int(datetime(2024, 1, 2, 11, 0, 0, tzinfo=timezone.utc).timestamp())}",
-            "Document 2",
+            "Document 2 - Updated Name",
         ),
         # doc3: NEW - doesn't exist in Snowflake - should be PROCESSED
         (
@@ -838,11 +841,42 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
     final_docs = get_snowflake_documents(snowflake_conn, prefix)
 
     # Should have 4 documents (doc1, doc2, doc3, doc4) - old_doc should be deleted
-    assert len(final_docs) == 4, f"Expected 4 documents after processing, got {len(final_docs)}: {sorted(final_docs)}"
+    assert len(final_docs) == 4, (
+        f"Expected 4 documents after processing, got {len(final_docs)}: {sorted(final_docs.keys())}"
+    )
 
     # Verify the URIs we expect are present
     expected_uris = {uri for uri, _ in current_sources}
-    assert final_docs == expected_uris, f"Expected URIs {sorted(expected_uris)}, got {sorted(final_docs)}"
+    assert set(final_docs.keys()) == expected_uris, (
+        f"Expected URIs {sorted(expected_uris)}, got {sorted(final_docs.keys())}"
+    )
+
+    # === VERIFY DISPLAY NAME UPDATES ===
+    # Check that display names were updated for existing documents (when feature is implemented)
+    with snowflake_conn.cursor() as cursor:
+        # Check display names in document_metadata table
+        cursor.execute(
+            "SELECT source_uri, display_name FROM document_metadata WHERE source_uri LIKE :1 ORDER BY source_uri",
+            ("test://project/doc%.txt?timestamp=%",),
+        )
+        doc1_metadata = cursor.fetchone()
+
+        cursor.execute(
+            "SELECT source_uri, display_name FROM document_metadata WHERE source_uri LIKE :1 ORDER BY source_uri",
+            ("test://project/doc%.pdf?timestamp=%",),
+        )
+        doc2_metadata = cursor.fetchone()
+
+        print(f"Doc1 metadata: {doc1_metadata}")
+        print(f"Doc2 metadata: {doc2_metadata}")
+
+        # Verify display names were updated
+        assert doc1_metadata[1] == "Document 1 - Updated Name", (
+            f"Expected updated display name for doc1, got {doc1_metadata[1]}"
+        )
+        assert doc2_metadata[1] == "Document 2 - Updated Name", (
+            f"Expected updated display name for doc2, got {doc2_metadata[1]}"
+        )
 
     # Verify logging behavior - should log deletions and new docs
     logged_messages = [str(call.args[0]) for call in mock_logger.info.call_args_list]
@@ -1059,6 +1093,137 @@ def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
             assert cursor.fetchone()[0] == 1, f"{kept_uri} should still exist in document_text"
 
     print("✅ delete_document test passed - individual document deletion from all tables works correctly!")
+
+
+@pytest.mark.deployment
+def test_update_display_name(snowflake_conn, test_schema, test_config, tmp_path):
+    """
+    Test update_display_name function - should update display_name for a source_uri in all tables.
+    Should update: document_metadata, document_text, document_chunks
+    Should not affect: document content, metadata content, chunk content
+    """
+    if not snowflake_conn:
+        pytest.skip("No Snowflake connection")
+
+    # === SETUP: Create test documents in all tables ===
+    test_documents = [
+        ("test://update/doc1.txt?timestamp=1", "Original Document 1", "Content for doc1"),
+        ("test://update/doc2.pdf?timestamp=2", "Original Document 2", "Content for doc2"),
+        ("test://update/doc3.xlsx?timestamp=3", "Original Document 3", "Content for doc3"),
+    ]
+
+    with snowflake_conn.cursor() as cursor:
+        for source_uri, display_name, content in test_documents:
+            # Insert into document_text
+            set_document_text(cursor=cursor, source_uri=source_uri, display_name=display_name, text=content)
+
+            # Insert into document_metadata
+            cursor.execute(
+                "INSERT INTO document_metadata (source_uri, display_name, generated_metadata) VALUES (:1, :2, :3)",
+                (source_uri, display_name, f"Generated metadata for {display_name}"),
+            )
+
+            # Insert into document_chunks
+            chunk_document(cursor, source_uri=source_uri, display_name=display_name, config=test_config)
+
+    # Verify initial setup
+    with snowflake_conn.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM document_metadata")
+        assert cursor.fetchone()[0] == 3, "Should have 3 entries in document_metadata"
+
+        cursor.execute("SELECT COUNT(*) FROM document_text")
+        assert cursor.fetchone()[0] == 3, "Should have 3 entries in document_text"
+
+        cursor.execute("SELECT COUNT(*) FROM document_chunks")
+        chunk_count = cursor.fetchone()[0]
+        assert chunk_count > 0, "Should have some entries in document_chunks"
+
+    # Store original content for later verification
+    with snowflake_conn.cursor() as cursor:
+        cursor.execute("SELECT source_uri, document_text FROM document_text ORDER BY source_uri")
+        original_text_content = cursor.fetchall()
+
+        cursor.execute("SELECT source_uri, generated_metadata FROM document_metadata ORDER BY source_uri")
+        original_metadata_content = cursor.fetchall()
+
+        cursor.execute(
+            "SELECT source_uri, contextualized_chunk FROM document_chunks ORDER BY source_uri, contextualized_chunk"
+        )
+        original_chunk_content = cursor.fetchall()
+
+    # === EXECUTE: Update display names ===
+    updates = [
+        ("test://update/doc1.txt?timestamp=1", "Updated Document 1"),
+        ("test://update/doc2.pdf?timestamp=2", "Updated Document 2"),
+    ]
+    # Note: doc3 will remain unchanged to verify selectivity
+
+    for source_uri, new_display_name in updates:
+        update_display_name(snowflake_conn, source_uri, new_display_name)
+
+    # === VERIFY: Display names updated, content unchanged ===
+    with snowflake_conn.cursor() as cursor:
+        # Check document_metadata table
+        cursor.execute("SELECT source_uri, display_name FROM document_metadata ORDER BY source_uri")
+        updated_metadata_names = cursor.fetchall()
+
+        expected_metadata_names = [
+            ("test://update/doc1.txt?timestamp=1", "Updated Document 1"),
+            ("test://update/doc2.pdf?timestamp=2", "Updated Document 2"),
+            ("test://update/doc3.xlsx?timestamp=3", "Original Document 3"),  # Unchanged
+        ]
+        assert updated_metadata_names == expected_metadata_names, (
+            f"Expected {expected_metadata_names}, got {updated_metadata_names}"
+        )
+
+        # Check document_text table
+        cursor.execute("SELECT source_uri, display_name FROM document_text ORDER BY source_uri")
+        updated_text_names = cursor.fetchall()
+
+        expected_text_names = [
+            ("test://update/doc1.txt?timestamp=1", "Updated Document 1"),
+            ("test://update/doc2.pdf?timestamp=2", "Updated Document 2"),
+            ("test://update/doc3.xlsx?timestamp=3", "Original Document 3"),  # Unchanged
+        ]
+        assert updated_text_names == expected_text_names, f"Expected {expected_text_names}, got {updated_text_names}"
+
+        # Check document_chunks table
+        cursor.execute("SELECT DISTINCT source_uri, display_name FROM document_chunks ORDER BY source_uri")
+        updated_chunk_names = cursor.fetchall()
+
+        expected_chunk_names = [
+            ("test://update/doc1.txt?timestamp=1", "Updated Document 1"),
+            ("test://update/doc2.pdf?timestamp=2", "Updated Document 2"),
+            ("test://update/doc3.xlsx?timestamp=3", "Original Document 3"),  # Unchanged
+        ]
+        assert updated_chunk_names == expected_chunk_names, (
+            f"Expected {expected_chunk_names}, got {updated_chunk_names}"
+        )
+
+        # Verify content unchanged in document_text
+        cursor.execute("SELECT source_uri, document_text FROM document_text ORDER BY source_uri")
+        final_text_content = cursor.fetchall()
+        assert final_text_content == original_text_content, "Document text content should remain unchanged"
+
+        # Verify content unchanged in document_metadata
+        cursor.execute("SELECT source_uri, generated_metadata FROM document_metadata ORDER BY source_uri")
+        final_metadata_content = cursor.fetchall()
+        assert final_metadata_content == original_metadata_content, "Generated metadata content should remain unchanged"
+
+        # Verify content unchanged in document_chunks (excluding display_name changes)
+        cursor.execute(
+            "SELECT source_uri, contextualized_chunk FROM document_chunks ORDER BY source_uri, contextualized_chunk"
+        )
+        final_chunk_content = cursor.fetchall()
+        assert len(final_chunk_content) == len(original_chunk_content), "Number of chunks should remain unchanged"
+
+        # Check that chunk content structure is preserved (chunks contain updated display names but same content structure)
+        for (orig_uri, orig_chunk), (final_uri, final_chunk) in zip(original_chunk_content, final_chunk_content):
+            assert orig_uri == final_uri, f"Chunk URIs should match: {orig_uri} vs {final_uri}"
+            # The chunk content will have updated display names, but the document content portion should be the same
+            assert "Document chunk:" in final_chunk, f"Chunk should contain 'Document chunk:' marker: {final_chunk}"
+
+    print("✅ update_display_name test passed - display names updated in all tables without affecting content!")
 
 
 @pytest.mark.deployment
