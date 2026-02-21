@@ -25,7 +25,6 @@ def get_console_logger(verbosity: int) -> Logger:
     """Returns a logger object set to the provided level of verbosity (0 for warn, 1 for info, 2 for debug)."""
     LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
     logging_level = LOGGING_LEVELS[min(verbosity, len(LOGGING_LEVELS) - 1)]  # cap to last level index
-    logging.basicConfig(level=logging_level)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging_level)
     formatter = logging.Formatter("%(asctime)s - [%(levelname)s] %(message)s")
@@ -66,6 +65,7 @@ def stage_document(
     *,
     source_uri: str,
     local_path: Path,
+    table_prefix: str,
 ) -> str:
     """Stages a document from a local filepath into the Snowflake stage @documents.
     Returns the path to the document within the Snowflake stage.
@@ -85,7 +85,7 @@ def stage_document(
     )
     stage_parent_sanitized = stage_parent.replace("\\", "\\\\").replace("'", "\\'")
     cursor.execute(
-        f"put 'file://{local_path_str}' '@documents/{stage_parent_sanitized}' auto_compress=false overwrite=true",
+        f"put 'file://{local_path_str}' '@{table_prefix}documents/{stage_parent_sanitized}' auto_compress=false overwrite=true",
     )
     return (stage_parent + "/" + local_path.name) if stage_parent else local_path.name
 
@@ -117,11 +117,12 @@ def set_document_text(
     source_uri: str,
     display_name: str,
     text: str,
+    table_prefix: str,
 ) -> None:
     """Uploads a document's text directly to document_text for documents that don't need to be parsed."""
     cursor.execute(
-        """
-        insert into document_text (source_uri, display_name, document_text)
+        f"""
+        insert into {table_prefix}document_text (source_uri, display_name, document_text)
         select :1 as source_uri, :2 as display_name, :3 as document_text
         """,
         (source_uri, display_name, text),
@@ -134,26 +135,29 @@ def parse_document(
     source_uri: str,
     display_name: str,
     stage_path: str,
+    table_prefix: str,
 ) -> None:
     """Parses a staged document and inserts into document_text.
     Raises RuntimeError if the parsing fails.
     """
     # Use ai_parse_document to generate the parsed text
     cursor.execute(
-        """
-        insert into document_text (source_uri, display_name, document_text)
+        f"""
+        insert into {table_prefix}document_text (source_uri, display_name, document_text)
         select
             :1 as source_uri,
             :2 as display_name,
             ai_parse_document(
-                to_file('@documents', :3),
-                {'mode': 'OCR'}
+                to_file('@{table_prefix}documents', :3),
+                {{'mode': 'OCR'}}
             )::string as document_text
         """,
         (source_uri, display_name, stage_path),
     )
     # Verify the content was inserted/updated successfully
-    cursor.execute("SELECT substring(document_text, 1, 100) FROM document_text WHERE source_uri = :1", (source_uri,))
+    cursor.execute(
+        f"SELECT substring(document_text, 1, 100) FROM {table_prefix}document_text WHERE source_uri = :1", (source_uri,)
+    )
     result = cursor.fetchone()
     if result is None:
         raise RuntimeError(f"Document parsing for {source_uri} failed - no content found.")
@@ -169,12 +173,15 @@ def generate_document_metadata(
     *,
     source_uri: str,
     display_name: str,
-    config: dict[str, Any],
+    table_prefix: str,
+    metadata_model: str,
+    metadata_prompt: str,
+    metadata_first_chars: int,
 ) -> None:
     """Generates synthetic metadata for a parsed document."""
     cursor.execute(
-        """
-        insert into document_metadata (source_uri, display_name, generated_metadata)
+        f"""
+        insert into {table_prefix}document_metadata (source_uri, display_name, generated_metadata)
         select
             :1 as source_uri,
             :2 as display_name,
@@ -187,15 +194,15 @@ def generate_document_metadata(
                 || substr(document_text, 1, :5) || chr(10) ||
                 '=== Document excerpt ends here ==='
             ) as generated_metadata
-        from document_text
+        from {table_prefix}document_text
         where source_uri = :1
         """,
         (
             source_uri,
             display_name,
-            config["metadata_model"],
-            config["metadata_prompt"],
-            config["metadata_first_chars"],
+            metadata_model,
+            metadata_prompt,
+            metadata_first_chars,
         ),
     )
 
@@ -205,20 +212,22 @@ def chunk_document(
     *,
     source_uri: str,
     display_name: str,
-    config: dict[str, Any],
+    table_prefix: str,
+    chunk_size: int,
+    chunk_overlap: int,
 ) -> None:
     """Splits documents into overlapping chunks for easier search."""
     cursor.execute(
-        """
-        insert into document_chunks (source_uri, display_name, contextualized_chunk)
+        f"""
+        insert into {table_prefix}document_chunks (source_uri, display_name, contextualized_chunk)
         select
             :1 as source_uri,
             :2 as display_name,
             document_metadata.generated_metadata
             || chr(10) || chr(10) || 'Document chunk:' || chr(10)
             || chunks.value as contextualized_chunk
-        from document_text
-        inner join document_metadata
+        from {table_prefix}document_text as document_text
+        inner join {table_prefix}document_metadata as document_metadata
             on document_text.source_uri = document_metadata.source_uri,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             document_text.document_text,
@@ -228,7 +237,7 @@ def chunk_document(
         )) as chunks
         where document_text.source_uri = :1
         """,
-        (source_uri, display_name, config["chunk_size"], config["chunk_overlap"]),
+        (source_uri, display_name, chunk_size, chunk_overlap),
     )
 
 
@@ -236,6 +245,8 @@ def commit_document(
     cursor: SnowflakeCursor,
     source_uri: str,
     /,
+    *,
+    table_prefix: str,
 ) -> None:
     """Commits a document addition.
     Accepts an already-configured (role, warehouse, schema set) connection object.
@@ -247,7 +258,7 @@ def commit_document(
     assert len(source_parts) == 2, f"Source URI {source_uri} did not have exactly one '?' character, aborting..."
     for table in ALL_TABLES:
         cursor.execute(
-            f"delete from {table} where source_uri like :1 and source_uri <> :2",
+            f"delete from {table_prefix}{table} where source_uri like :1 and source_uri <> :2",
             (source_parts[0] + "%", source_uri),
         )
 
@@ -257,6 +268,7 @@ def process_document(
     source_uri: str,
     display_name: str,
     downloader: Callable[[str], Path],
+    table_prefix: str,
     config: dict[str, Any],
     logger: Logger = getLogger(),
 ) -> None:
@@ -268,58 +280,103 @@ def process_document(
             case "htm" | "html" | "txt":
                 # Upload the contents directly
                 logger.info(f"Uploading contents of {source_uri} directly...")
-                set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=local_path.read_text())
+                set_document_text(
+                    cursor,
+                    source_uri=source_uri,
+                    display_name=display_name,
+                    text=local_path.read_text(encoding="utf-8", errors="backslashreplace"),
+                    table_prefix=table_prefix,
+                )
             case "xls" | "xlsx":
                 # Convert Excel to HTML
                 logger.info(f"Converting Excel document {source_uri} to HTML...")
                 document_html = excel_to_html(local_path)
                 logger.info(f"Uploading converted HTML contents of {source_uri} directly...")
-                set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=document_html)
+                set_document_text(
+                    cursor,
+                    source_uri=source_uri,
+                    display_name=display_name,
+                    text=document_html,
+                    table_prefix=table_prefix,
+                )
             case "doc" | "docx":
                 # Convert Word to HTML
                 logger.info(f"Converting Word document {source_uri} to HTML...")
                 document_html = word_doc_to_html(local_path)
                 logger.info(f"Uploading converted HTML contents of {source_uri} directly...")
-                set_document_text(cursor, source_uri=source_uri, display_name=display_name, text=document_html)
+                set_document_text(
+                    cursor,
+                    source_uri=source_uri,
+                    display_name=display_name,
+                    text=document_html,
+                    table_prefix=table_prefix,
+                )
             case _:
                 # Parse in Snowflake
                 logger.info(f"Uploading document {source_uri} to Snowflake...")
-                stage_path = stage_document(cursor, source_uri=source_uri, local_path=local_path)
+                stage_path = stage_document(
+                    cursor, source_uri=source_uri, local_path=local_path, table_prefix=table_prefix
+                )
                 logger.info(f"Parsing document {source_uri} in Snowflake...")
-                parse_document(cursor, source_uri=source_uri, display_name=display_name, stage_path=stage_path)
+                parse_document(
+                    cursor,
+                    source_uri=source_uri,
+                    display_name=display_name,
+                    stage_path=stage_path,
+                    table_prefix=table_prefix,
+                )
         # Generate synthetic metadata
         logger.info(f"Generating synthetic metadata for document {source_uri}...")
-        generate_document_metadata(cursor, source_uri=source_uri, display_name=display_name, config=config)
+        generate_document_metadata(
+            cursor,
+            source_uri=source_uri,
+            display_name=display_name,
+            table_prefix=table_prefix,
+            metadata_model=config["metadata_model"],
+            metadata_prompt=config["metadata_prompt"],
+            metadata_first_chars=config["metadata_first_chars"],
+        )
         # Split the document into chunks
         logger.info(f"Chunking document {source_uri}...")
-        chunk_document(cursor, source_uri=source_uri, display_name=display_name, config=config)
+        chunk_document(
+            cursor,
+            source_uri=source_uri,
+            display_name=display_name,
+            table_prefix=table_prefix,
+            chunk_size=config["chunk_size"],
+            chunk_overlap=config["chunk_overlap"],
+        )
         # Commit
         logger.info(f"Processed {source_uri} - Deleting previous versions of file")
-        commit_document(cursor, source_uri)
+        commit_document(cursor, source_uri, table_prefix=table_prefix)
 
 
-def clear_stage(configured_connection: SnowflakeConnection, /) -> None:
+def clear_stage(configured_connection: SnowflakeConnection, /, *, table_prefix: str) -> None:
     """Clear the documents stage before ingesting new documents."""
     with configured_connection.cursor() as cursor:
-        cursor.execute("REMOVE @documents")
+        cursor.execute(f"REMOVE @{table_prefix}documents")
 
 
 def delete_document(
     configured_connection: SnowflakeConnection,
     source_uri: str,
     /,
+    *,
+    table_prefix: str,
 ) -> None:
     """Deletes a particular source_uri from all tables without affecting the document's other versions.
     Accepts an already-configured (role, warehouse, schema set) connection object.
     """
     with configured_connection.cursor() as cursor:
         for table in ALL_TABLES:
-            cursor.execute(f"delete from {table} where source_uri = :1", (source_uri,))
+            cursor.execute(f"delete from {table_prefix}{table} where source_uri = :1", (source_uri,))
 
 
 def get_snowflake_documents(
     configured_connection: SnowflakeConnection,
+    *,
     prefix: str,
+    table_prefix: str,
 ) -> dict[str, str]:
     """Get information about the documents currently in Snowflake.
     Accepts an already-configured (role, warehouse, schema set) connection object.
@@ -330,19 +387,19 @@ def get_snowflake_documents(
     with configured_connection.cursor() as cursor:
         # Query document_metadata table for documents matching the prefix
         cursor.execute(
-            "select source_uri, display_name from document_metadata where source_uri like :1",
+            f"select source_uri, display_name from {table_prefix}document_metadata where source_uri like :1",
             (prefix + "%",),
         )
         return {row[0]: row[1] for row in cursor}
 
 
-def refresh_search_services(configured_connection: SnowflakeConnection) -> None:
+def refresh_search_services(configured_connection: SnowflakeConnection, /, *, table_prefix: str) -> None:
     """Make sure the snowflake-document-agent Cortex search services have the latest data.
     Accepts an already-configured (role, warehouse, schema set) connection object.
     """
     with configured_connection.cursor() as cursor:
         for search_service in ["search_metadata", "search_contents"]:
-            cursor.execute(f"alter cortex search service if exists {search_service} refresh")
+            cursor.execute(f"alter cortex search service if exists {table_prefix}{search_service} refresh")
 
 
 def update_display_name(
@@ -350,13 +407,17 @@ def update_display_name(
     source_uri: str,
     display_name: str,
     /,
+    *,
+    table_prefix: str,
 ) -> None:
     """Changes the display_name for a source_uri in all tables.
     Accepts an already-configured (role, warehouse, schema set) connection object.
     """
     with configured_connection.cursor() as cursor:
         for table in ALL_TABLES:
-            cursor.execute(f"update {table} set display_name = :2 where source_uri = :1", (source_uri, display_name))
+            cursor.execute(
+                f"update {table_prefix}{table} set display_name = :2 where source_uri = :1", (source_uri, display_name)
+            )
 
 
 def process_changed_documents(
@@ -380,13 +441,14 @@ def process_changed_documents(
     sources_iterator = iter(sources)
     if config is None:
         config = load_config()
+    table_prefix = config["agent_name"].lower() + "_"
     configured_connection = configure_connection(connection, config)
     logger.info(f"Getting Snowflake documents with {prefix=}...")
-    targets = get_snowflake_documents(configured_connection, prefix)
+    targets = get_snowflake_documents(configured_connection, prefix=prefix, table_prefix=table_prefix)
     source_uris = set()
     any_processed = False
     delete_missing_uris = False
-    clear_stage(configured_connection)
+    clear_stage(configured_connection, table_prefix=table_prefix)
     with ThreadPoolExecutor(max_workers) as executor:
         future_uris = {}
         sources_remaining = True
@@ -410,7 +472,9 @@ def process_changed_documents(
                             logger.info(
                                 f"Updating display name for {source_uri} from {targets[source_uri]} to {display_name}..."
                             )
-                            update_display_name(configured_connection, source_uri, display_name)
+                            update_display_name(
+                                configured_connection, source_uri, display_name, table_prefix=table_prefix
+                            )
                     else:
                         logger.info(f"Source {source_uri} not in Snowflake - submitting for processing...")
                         future = executor.submit(
@@ -419,6 +483,7 @@ def process_changed_documents(
                             source_uri,
                             display_name,
                             downloader,
+                            table_prefix,
                             config,
                             logger,
                         )
@@ -435,19 +500,19 @@ def process_changed_documents(
                         any_processed = True
                     except Exception as err:
                         logger.error(
-                            f"Error processing {source_uri} - deleting from database. {type(err).__name__}: {err}"
+                            f"Error processing {source_uri} - cleaning up incomplete rows. {type(err).__name__}: {err}"
                         )
-                        delete_document(configured_connection, source_uri)
+                        delete_document(configured_connection, source_uri, table_prefix=table_prefix)
 
     # Delete the removed documents
     deleted_uris = (set(targets) - source_uris) if delete_missing_uris else set()
     for source_uri in deleted_uris:
         logger.info(f"Deleting removed document {source_uri} from Snowflake...")
-        delete_document(configured_connection, source_uri)
+        delete_document(configured_connection, source_uri, table_prefix=table_prefix)
     # Make sure Cortex search services reflect the changes
     if deleted_uris or any_processed:
         logger.info("Finished processing documents - refreshing search services...")
-        refresh_search_services(configured_connection)
+        refresh_search_services(configured_connection, table_prefix=table_prefix)
         logger.info("Search services refreshed - all done!")
     else:
         logger.info("No documents processed or deleted.")

@@ -15,10 +15,10 @@ def pytest_addoption(parser):
         "--snowflake-connection-name", action="store", default=None, help="Snowflake connection name from config"
     )
     parser.addoption(
-        "--danger-use-existing-schema",
+        "--use-existing-schema",
         action="store_true",
         default=False,
-        help="Use existing schema and truncate test tables instead of creating new schema (DANGEROUS for production!)",
+        help="Use existing schema and truncate test tables instead of creating new schema",
     )
     parser.addoption(
         "--opentext-node-id", action="store", type=int, default=None, help="OpenText node ID for deployment testing"
@@ -100,7 +100,7 @@ def temp_schema(snowflake_conn, pytestconfig):
         return
 
     # Skip if using existing schema
-    if pytestconfig.getoption("--danger-use-existing-schema"):
+    if pytestconfig.getoption("--use-existing-schema"):
         yield None
         return
 
@@ -143,14 +143,86 @@ def temp_schema(snowflake_conn, pytestconfig):
         cursor.close()
 
 
+@pytest.fixture(scope="session")
+def check_test_tables(snowflake_conn, pytestconfig):
+    """
+    Checks for the existence of test tables and displays setup instructions if missing.
+    """
+    if snowflake_conn is None or not pytestconfig.getoption("--run-deployment"):
+        yield
+        return
+
+    # Only check when using existing schema
+    if not pytestconfig.getoption("--use-existing-schema"):
+        yield
+        return
+
+    cursor = snowflake_conn.cursor()
+
+    # Check for test tables with 'test_' prefix
+    test_tables = [f"test_{table}" for table in ALL_TABLES]
+    test_stage = "test_documents"
+    test_services = ["test_search_metadata", "test_search_contents"]
+
+    missing_objects = []
+
+    # Check tables
+    for table in test_tables:
+        try:
+            cursor.execute(f"DESC TABLE {table}")
+        except Exception:
+            missing_objects.append(f"table {table}")
+
+    # Check stage
+    try:
+        cursor.execute(f"DESC STAGE {test_stage}")
+    except Exception:
+        missing_objects.append(f"stage {test_stage}")
+
+    # Check search services
+    for service in test_services:
+        try:
+            cursor.execute(f"DESC CORTEX SEARCH SERVICE {service}")
+        except Exception:
+            missing_objects.append(f"search service {service}")
+
+    if missing_objects:
+        print("\n" + "=" * 80)
+        print("🚨 MISSING TEST OBJECTS DETECTED")
+        print("=" * 80)
+        print("The following test objects are missing:")
+        for obj in missing_objects:
+            print(f"  - {obj}")
+        print("\n📋 TO FIX THIS:")
+        print("Run the setup scripts to initialize test objects:")
+        print()
+        print("1. Set up test tables and stage:")
+        print(
+            "   snow sql -c [your connection name] --env agent_name=test -f scripts/snowflake-cli/setup_04_tables_stages.sql"
+        )
+        print()
+        print("2. Set up test search services and agent:")
+        print(
+            "   snow sql -c [your connection name] --env agent_name=test -f scripts/snowflake-cli/setup_05_cortex_search_agent.sql"
+        )
+        print()
+        print("3. Then run tests with:")
+        print("   pytest --run-deployment --snowflake-connection-name=[your connection name] --use-existing-schema")
+        print("=" * 80)
+        pytest.fail(f"Missing {len(missing_objects)} test objects. Run setup scripts first.")
+
+    cursor.close()
+    yield
+
+
 @pytest.fixture(scope="function")
-def existing_schema(snowflake_conn, pytestconfig):
+def existing_schema(snowflake_conn, pytestconfig, check_test_tables):
     """
     Uses existing schema from real config and truncates test tables.
     Child fixture - use test_schema instead.
     """
-    # Only available with --danger-use-existing-schema flag
-    if not pytestconfig.getoption("--danger-use-existing-schema"):
+    # Only available with --use-existing-schema flag
+    if not pytestconfig.getoption("--use-existing-schema"):
         yield None
         return
 
@@ -175,11 +247,11 @@ def existing_schema(snowflake_conn, pytestconfig):
     # Truncate the test tables and clear stage to prepare for clean testing
     print(f"🧹 Truncating test tables in {schema_name}...")
     for table in ALL_TABLES:
-        cursor.execute(f"TRUNCATE TABLE IF EXISTS {table}")
-        print(f"  Truncated {table}")
+        cursor.execute(f"TRUNCATE TABLE IF EXISTS test_{table}")
+        print(f"  Truncated test_{table}")
 
-    clear_stage(snowflake_conn)
-    print("  Cleared @documents stage")
+    clear_stage(snowflake_conn, table_prefix="test_")
+    print("  Cleared @test_documents stage")
 
     yield schema_name
 
@@ -193,7 +265,7 @@ def test_schema(temp_schema, existing_schema, pytestconfig):
     Unified test schema fixture that delegates to appropriate child fixture.
     Returns schema name for tests to use.
     """
-    if pytestconfig.getoption("--danger-use-existing-schema"):
+    if pytestconfig.getoption("--use-existing-schema"):
         return existing_schema
     else:
         return temp_schema
@@ -244,9 +316,14 @@ def real_config(existing_schema):
 def test_config(example_config, real_config, pytestconfig):
     """
     Unified test config fixture that delegates to appropriate child fixture.
-    Returns config dict for tests to use.
+    Returns config dict for tests to use, with agent_name set to "test" for test isolation.
     """
-    if pytestconfig.getoption("--danger-use-existing-schema"):
-        return real_config
+    if pytestconfig.getoption("--use-existing-schema"):
+        config = real_config
     else:
-        return example_config
+        config = example_config
+
+    # Set agent_name to "test" for all tests to use test-prefixed tables
+    config["agent_name"] = "test"
+
+    return config

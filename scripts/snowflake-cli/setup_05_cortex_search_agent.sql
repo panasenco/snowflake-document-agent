@@ -3,26 +3,26 @@ use role <% ctx.env.role %>;
 use schema <% ctx.env.database %>.<% ctx.env.schema %>;
 
 -- Metadata search
-create or replace cortex search service search_metadata
+create or replace cortex search service <% ctx.env.agent_name %>_search_metadata
     on generated_metadata
     warehouse = <% ctx.env.warehouse %>
     target_lag = '1 day'
     embedding_model = '<% ctx.env.search_embedding_model %>'
     initialize = on_schedule
-    as select * from document_metadata;
+    as select * from <% ctx.env.agent_name %>_document_metadata;
 
-alter cortex search service search_metadata suspend indexing;
+alter cortex search service <% ctx.env.agent_name %>_search_metadata suspend indexing;
 
 -- Content search
-create or replace cortex search service search_contents
+create or replace cortex search service <% ctx.env.agent_name %>_search_contents
     on contextualized_chunk
     warehouse = <% ctx.env.warehouse %>
     target_lag = '1 day'
     embedding_model = '<% ctx.env.search_embedding_model %>'
     initialize = on_schedule
-    as select * from document_chunks;
+    as select * from <% ctx.env.agent_name %>_document_chunks;
 
-alter cortex search service search_contents suspend indexing;
+alter cortex search service <% ctx.env.agent_name %>_search_contents suspend indexing;
 
 -- Agent
 create or replace agent <% ctx.env.agent_name %>
@@ -56,12 +56,12 @@ create or replace agent <% ctx.env.agent_name %>
     search_document_metadata:
       id_column: "SOURCE_URI"
       max_results: <% ctx.env.agent_metadata_max_results %>
-      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.SEARCH_METADATA"
+      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.<% ctx.env.agent_name %>_SEARCH_METADATA"
       title_column: "DISPLAY_NAME"
       
     search_document_contents:
       id_column: "SOURCE_URI"
       max_results: <% ctx.env.agent_document_max_results %>
-      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.SEARCH_CONTENTS"
+      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.<% ctx.env.agent_name %>_SEARCH_CONTENTS"
       title_column: "DISPLAY_NAME"
   $$;
