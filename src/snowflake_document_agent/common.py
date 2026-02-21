@@ -223,7 +223,8 @@ def chunk_document(
         select
             :1 as source_uri,
             :2 as display_name,
-            document_metadata.generated_metadata
+            'Document metadata:' || chr(10)
+            || document_metadata.generated_metadata
             || chr(10) || chr(10) || 'Document chunk:' || chr(10)
             || chunks.value as contextualized_chunk
         from {table_prefix}document_text as document_text
@@ -287,7 +288,7 @@ def process_document(
                     text=local_path.read_text(encoding="utf-8", errors="backslashreplace"),
                     table_prefix=table_prefix,
                 )
-            case "xls" | "xlsx":
+            case "xls" | "xlsx" | "xlsm":
                 # Convert Excel to HTML
                 logger.info(f"Converting Excel document {source_uri} to HTML...")
                 document_html = excel_to_html(local_path)
@@ -428,6 +429,7 @@ def process_changed_documents(
     prefix: str,
     config: dict[str, Any] | None = None,
     max_workers: int = 8,
+    delete_missing: bool = False,
     logger: Logger = getLogger(),
 ) -> None:
     """Process just the documents that have changed since the last ingestion into Snowflake.
@@ -447,25 +449,25 @@ def process_changed_documents(
     targets = get_snowflake_documents(configured_connection, prefix=prefix, table_prefix=table_prefix)
     source_uris = set()
     any_processed = False
-    delete_missing_uris = False
+    all_sources_fetched = False
+    fetch_sources = True
     clear_stage(configured_connection, table_prefix=table_prefix)
     with ThreadPoolExecutor(max_workers) as executor:
         future_uris = {}
-        sources_remaining = True
-        while sources_remaining or len(future_uris) > 0:
-            if sources_remaining and len(future_uris) < max_workers:
+        while fetch_sources or len(future_uris) > 0:
+            if fetch_sources and len(future_uris) < max_workers:
                 try:
-                    logger.debug(f"Getting next source. {sources_remaining=}, {len(future_uris)=}, {max_workers=}")
+                    logger.debug(f"Getting next source. {fetch_sources=}, {len(future_uris)=}, {max_workers=}")
                     source_uri, display_name = next(sources_iterator)
                     source_uris.add(source_uri)
                 except StopIteration:
-                    sources_remaining = False
-                    logger.debug(f"All sources present, will delete missing. {len(source_uris)=}, {len(targets)=}")
-                    delete_missing_uris = True
+                    fetch_sources = False
+                    logger.debug(f"All sources fetched. {len(source_uris)=}, {len(targets)=}")
+                    all_sources_fetched = True
                 except Exception as err:
                     logger.error(f"Error fetching the next source in iterator - aborting. {type(err).__name__}: {err}")
-                    sources_remaining = False
-                if sources_remaining:
+                    fetch_sources = False
+                if fetch_sources:
                     if source_uri in targets:
                         logger.debug(f"Source {source_uri} already present in Snowflake - skipping processing...")
                         if targets[source_uri] != display_name:
@@ -505,10 +507,12 @@ def process_changed_documents(
                         delete_document(configured_connection, source_uri, table_prefix=table_prefix)
 
     # Delete the removed documents
-    deleted_uris = (set(targets) - source_uris) if delete_missing_uris else set()
-    for source_uri in deleted_uris:
-        logger.info(f"Deleting removed document {source_uri} from Snowflake...")
-        delete_document(configured_connection, source_uri, table_prefix=table_prefix)
+    deleted_uris = set()
+    if delete_missing and all_sources_fetched:
+        deleted_uris = set(targets) - source_uris
+        for source_uri in deleted_uris:
+            logger.info(f"Deleting removed document {source_uri} from Snowflake...")
+            delete_document(configured_connection, source_uri, table_prefix=table_prefix)
     # Make sure Cortex search services reflect the changes
     if deleted_uris or any_processed:
         logger.info("Finished processing documents - refreshing search services...")

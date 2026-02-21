@@ -13,6 +13,7 @@ from snowflake_document_agent.common import (
     chunk_document,
     clear_stage,
     process_changed_documents,
+    process_document,
     delete_document,
     get_snowflake_documents,
     refresh_search_services,
@@ -761,12 +762,13 @@ def test_get_snowflake_documents(snowflake_conn, test_schema, test_config, tmp_p
 @pytest.mark.deployment
 def test_process_changed_documents_basic(snowflake_conn, test_schema, test_config, tmp_path):
     """
-    Test process_changed_documents function - incremental processing logic.
-    The current implementation handles:
-    1. New documents (in sources but not in Snowflake) - processes them
-    2. Deleted documents (in Snowflake but not in sources) - deletes them
-    3. Existing documents (in both sources and Snowflake) - skips them
-    4. Calls refresh_search_services when there are changes
+    Test process_changed_documents function - incremental processing logic and delete_missing parameter.
+    Tests these scenarios:
+    1. delete_missing=False (default): New docs processed, missing docs NOT deleted
+    2. delete_missing=True: New docs processed, missing docs ARE deleted
+    3. delete_missing=True + broken iterator: No deletion due to incomplete iteration (safety)
+    4. Existing documents (in both sources and Snowflake) - skips them
+    5. Calls refresh_search_services when there are changes
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
@@ -823,6 +825,8 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
         ),
     ]
 
+    print("Processing initial documents")
+
     # Process initial documents
     process_changed_documents(
         initial_sources,
@@ -861,12 +865,13 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
             "Document 4",
         ),
     ]
-    # Note: old_doc.docx is in Snowflake but not in current_sources, so should be DELETED
+    # Note: old_doc.docx is in Snowflake but not in current_sources
 
-    mock_logger = MagicMock()
-
-    # === EXECUTE ===
+    # === PHASE 1: delete_missing=False (default) ===
+    # Should process new docs but NOT delete old_doc
     # Mock refresh_search_services to avoid long execution time
+    print("Phase 1: delete_missing = False (default)")
+
     with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
         process_changed_documents(
             current_sources,
@@ -874,40 +879,126 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
             downloader=mock_downloader,
             prefix=prefix,
             config=test_config,
+            delete_missing=False,  # TDD: This parameter doesn't exist yet - should fail
             max_workers=4,
-            logger=mock_logger,
         )
 
-        # Verify refresh_search_services was called (there were changes: 1 deleted, 2 new)
+        # Verify refresh_search_services was called (there were changes: 2 new docs)
         assert mock_refresh.call_count == 1, (
             f"Expected refresh_search_services to be called once, got {mock_refresh.call_count}"
         )
 
-    # === VERIFY RESULTS ===
-
-    # Debug: Check what was logged
-    print("\n=== LOGGED MESSAGES ===")
-    print("INFO calls:")
-    for call in mock_logger.info.call_args_list:
-        print(f"  {call.args[0] if call.args else 'No args'}")
-    print("ERROR calls:")
-    for call in mock_logger.error.call_args_list:
-        print(f"  {call.args[0] if call.args else 'No args'}")
-    print("=== END LOGGED MESSAGES ===\n")
-
-    # Get final state from Snowflake
-    final_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
-
-    # Should have 4 documents (doc1, doc2, doc3, doc4) - old_doc should be deleted
-    assert len(final_docs) == 4, (
-        f"Expected 4 documents after processing, got {len(final_docs)}: {sorted(final_docs.keys())}"
+    # Verify old_doc was NOT deleted (should have 5 docs: 3 original + 2 new)
+    phase1_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
+    assert len(phase1_docs) == 5, (
+        f"Phase 1: Expected 5 documents (old_doc not deleted), got {len(phase1_docs)}: {sorted(phase1_docs.keys())}"
     )
 
-    # Verify the URIs we expect are present
+    # Verify old_doc is still present
+    old_doc_uri = (
+        f"test://project/old_doc.docx?timestamp={int(datetime(2024, 1, 3, 12, 0, 0, tzinfo=timezone.utc).timestamp())}"
+    )
+    assert old_doc_uri in phase1_docs, f"Expected old_doc to still be present, got keys: {sorted(phase1_docs.keys())}"
+
+    # === PHASE 2: delete_missing=True ===
+    # Should delete old_doc since it's not in current_sources
+    print(f"\nDEBUG: Phase 1 completed. Documents after Phase 1: {sorted(phase1_docs.keys())}")
+    print(f"DEBUG: old_doc_uri = {old_doc_uri}")
+    print(f"DEBUG: old_doc in phase1_docs = {old_doc_uri in phase1_docs}")
+    print("Phase 2: delete_missing = True")
+
+    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+        process_changed_documents(
+            current_sources,  # Same sources as before
+            connection=snowflake_conn,
+            downloader=mock_downloader,
+            prefix=prefix,
+            config=test_config,
+            delete_missing=True,
+            max_workers=4,
+        )
+
+        # Verify refresh_search_services was called (there were changes: 1 deleted)
+        assert mock_refresh.call_count == 1, (
+            f"Expected refresh_search_services to be called once, got {mock_refresh.call_count}"
+        )
+
+    # === VERIFY PHASE 2 RESULTS (do this immediately after Phase 2) ===
+    phase2_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
+
+    # Should have 4 documents after deletion (old_doc deleted)
+    assert len(phase2_docs) == 4, (
+        f"Phase 2: Expected 4 documents (old_doc deleted), got {len(phase2_docs)}: {sorted(phase2_docs.keys())}"
+    )
+
+    # Verify old_doc was deleted
+    assert old_doc_uri not in phase2_docs, f"Expected old_doc to be deleted, got keys: {sorted(phase2_docs.keys())}"
+
+    # Verify the URIs we expect are present in phase2_docs
     expected_uris = {uri for uri, _ in current_sources}
-    assert set(final_docs.keys()) == expected_uris, (
-        f"Expected URIs {sorted(expected_uris)}, got {sorted(final_docs.keys())}"
+    assert set(phase2_docs.keys()) == expected_uris, (
+        f"Expected URIs {sorted(expected_uris)}, got {sorted(phase2_docs.keys())}"
     )
+
+    # === PHASE 3: delete_missing=True + broken iterator ===
+    # Should NOT delete anything due to iterator failure (safety feature)
+
+    # Create a broken iterator that fails after yielding some sources
+    class BrokenIterator:
+        def __init__(self, sources, break_after=2):
+            self.sources = list(sources)
+            self.break_after = break_after
+            self.count = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.count >= self.break_after:
+                raise RuntimeError("Simulated iterator failure")
+            if self.count >= len(self.sources):
+                raise StopIteration()
+            item = self.sources[self.count]
+            self.count += 1
+            return item
+
+    # Add old_doc back for this test
+    print("Phase 3: delete_missing = True + broken iterator")
+    process_document(
+        snowflake_conn,
+        old_doc_uri,
+        "Old Document",
+        mock_downloader,
+        "test_",
+        test_config,
+    )
+
+    # Verify setup: should have 5 docs again
+    pre_broken_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
+    assert len(pre_broken_docs) == 5, f"Pre-broken test setup: Expected 5 documents, got {len(pre_broken_docs)}"
+
+    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+        # This should process some docs but fail before completion, preventing deletion
+        broken_sources = BrokenIterator(current_sources, break_after=2)
+        process_changed_documents(
+            broken_sources,
+            connection=snowflake_conn,
+            downloader=mock_downloader,
+            prefix=prefix,
+            config=test_config,
+            delete_missing=True,  # Even with True, should not delete due to broken iterator
+            max_workers=4,
+        )
+
+        # Should still call refresh if any docs were processed before the failure
+        # (depends on implementation details)
+
+    # === VERIFY PHASE 3 RESULTS ===
+    post_broken_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
+    assert len(post_broken_docs) == 5, (
+        f"Phase 3: Expected 5 documents (no deletion due to broken iterator), got {len(post_broken_docs)}"
+    )
+    assert old_doc_uri in post_broken_docs, "Expected old_doc to still be present after broken iterator"
 
     # === VERIFY DISPLAY NAME UPDATES ===
     # Check that display names were updated for existing documents (when feature is implemented)
@@ -936,13 +1027,6 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
             f"Expected updated display name for doc2, got {doc2_metadata[1]}"
         )
 
-    # Verify logging behavior - should log deletions and new docs
-    logged_messages = [str(call.args[0]) for call in mock_logger.info.call_args_list]
-
-    # Should log deletion of old_doc.docx
-    deletion_logs = [msg for msg in logged_messages if "delet" in msg.lower() and "old_doc.docx" in msg]
-    assert len(deletion_logs) > 0, f"Should log deletion of old_doc.docx. All logs: {logged_messages}"
-
     # Verify content was actually stored for new documents
     with snowflake_conn.cursor() as cursor:
         cursor.execute(
@@ -960,7 +1044,7 @@ def test_process_changed_documents_basic(snowflake_conn, test_schema, test_confi
         assert doc4_count == 1, "doc4.html should have been processed and stored"
 
     # === TEST NO CHANGES: Process same sources again ===
-    mock_logger.reset_mock()
+    mock_logger = MagicMock()
 
     with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh_no_changes:
         process_changed_documents(

@@ -223,6 +223,9 @@ def main() -> None:
         "-p", "--prefix", default="opentext", help="URI scheme prefix for the documents (default: opentext)"
     )
     parser.add_argument(
+        "-d", "--delete-missing", action="store_true", help="URI scheme prefix for the documents (default: opentext)"
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         help="Be verbose. Include once for INFO output, twice for DEBUG output.",
@@ -240,6 +243,7 @@ def main() -> None:
         connection=args.snowflake_connection,
         downloader=opentext_downloader,
         prefix=f"{args.prefix}://",
+        delete_missing=args.delete_missing,
         logger=logger,
     )
 
