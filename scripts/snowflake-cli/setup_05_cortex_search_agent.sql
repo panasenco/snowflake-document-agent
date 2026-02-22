@@ -20,7 +20,16 @@ create or replace cortex search service <% ctx.env.agent_name %>_search_contents
     target_lag = '1 day'
     embedding_model = '<% ctx.env.search_embedding_model %>'
     initialize = on_schedule
-    as select * from <% ctx.env.agent_name %>_document_chunks;
+    as select
+        document_chunks.source_uri as source_uri,
+        document_metadata.display_name as display_name,
+        'Document metadata:' || chr(10)
+        || document_metadata.generated_metadata
+        || chr(10) || chr(10) || 'Document chunk:' || chr(10)
+        || document_chunks.document_chunk as contextualized_chunk
+    from <% ctx.env.agent_name %>_document_chunks as document_chunks
+    inner join <% ctx.env.agent_name %>_document_metadata as document_metadata
+        on document_chunks.source_uri = document_metadata.source_uri;
 
 alter cortex search service <% ctx.env.agent_name %>_search_contents suspend indexing;
 

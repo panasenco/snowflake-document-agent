@@ -28,7 +28,7 @@ def get_local_documents(root_path: Path, source_name: str = "") -> dict[str, str
                     "file",
                     source_name,
                     urlsplit(file_path.as_uri()).path,
-                    urlencode({"mtime": int(file_path.stat().st_mtime)}),
+                    urlencode({"m": int(file_path.stat().st_mtime)}),
                     "",
                 )
             )
