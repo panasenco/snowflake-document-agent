@@ -173,7 +173,7 @@ class OpenTextDownloader:
                             prefix,
                             str(node_id),
                             "",
-                            urlencode({"version_number": version["data"]["version_number"], "extension": extension}),
+                            urlencode({"v": version["data"]["version_number"], "ext": extension}),
                             "",
                         )
                     )
