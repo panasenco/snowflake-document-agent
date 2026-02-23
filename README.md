@@ -110,5 +110,23 @@ nix develop
 Run this command to upload some documents to Snowflake and to see what changes are being synchronized:
 
 ```sh
-ingest-local path/to/your/documents --verbose
+ingest-local --snowflake-connection default --verbose path/to/your/documents
 ```
+
+### Ingest OpenText files
+
+OpenText ingestion requires the following environment variables to be set:
+- 
+
+Replace `12345678` in the below command with your real OpenText node ID that should be recursively traversed and
+uploaded to Snowflake:
+
+```sh
+ingest-local --snowflake-connection default --verbose 12345678
+```
+
+## Using the agent
+
+After an ingestion, your agent is ready to use!
+The agent's name will be whatever is configured in your snowflake.yml.
+Just ask the agent a question about anything within your documents and it should be able to answer!
