@@ -528,7 +528,7 @@ def process_changed_documents(
     delete_missing: bool = False,
     update_display_names: bool = False,
     logger: Logger = getLogger(),
-) -> None:
+) -> tuple[int, int, int]:
     """Process just the documents that have changed since the last ingestion into Snowflake.
     Accepts an iterable (list or generator) of (source_uri, display_name) tuples.
     Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
@@ -537,6 +537,7 @@ def process_changed_documents(
     Deletes old versions of successfully ingested documents, if any.
     If delete_missing is set, deletes matching documents that are only in Snowflake and are no longer in the source.
     If update_display_names is set, updates the display names of otherwise unchanged documents.
+    Returns a (processed, skipped, failed) count tuple.
     """
     sources_iterator = iter(sources)
     if config is None:
@@ -562,7 +563,6 @@ def process_changed_documents(
                 try:
                     logger.debug(f"Getting next source. {process_sources=}, {len(future_uris)=}, {max_workers=}")
                     source_uri, display_name = next(sources_iterator)
-                    source_uris.add(source_uri)
                 except StopIteration:
                     process_sources = False
                     logger.debug(f"All sources fetched. {len(source_uris)=}")
@@ -571,22 +571,29 @@ def process_changed_documents(
                     logger.exception("Error fetching the next source in iterator - aborting.")
                     process_sources = False
                 if process_sources:
-                    logger.info(f"Submitting {source_uri} for processing...")
-                    future = executor.submit(
-                        process_document,
-                        configured_connection,
-                        source_uri,
-                        display_name,
-                        downloader,
-                        table_prefix,
-                        metadata_config,
-                        metadata_config_hash,
-                        chunk_config,
-                        chunk_config_hash,
-                        update_display_names,
-                        logger,
-                    )
-                    future_uris[future] = source_uri
+                    if source_uri in source_uris:
+                        logger.warning(
+                            f"The URI of source {source_uri} ({display_name}) was already encountered - skipping!"
+                        )
+                        n_skipped += 1
+                    else:
+                        source_uris.add(source_uri)
+                        logger.info(f"Submitting {source_uri} for processing...")
+                        future = executor.submit(
+                            process_document,
+                            configured_connection,
+                            source_uri,
+                            display_name,
+                            downloader,
+                            table_prefix,
+                            metadata_config,
+                            metadata_config_hash,
+                            chunk_config,
+                            chunk_config_hash,
+                            update_display_names,
+                            logger,
+                        )
+                        future_uris[future] = source_uri
             elif len(future_uris) > 0:
                 logger.debug(f"Waiting for next future. {len(future_uris)=}")
                 done, _ = wait(future_uris, return_when=FIRST_COMPLETED)
@@ -629,14 +636,16 @@ def process_changed_documents(
     else:
         logger.info("No documents processed or deleted.")
     # Summarize
-    print("=== ERRORS ===")
-    error_capture_handler = [handler for handler in logger.handlers if isinstance(handler, ErrorCaptureHandler)][0]
-    for logger_message, exc_info in error_capture_handler.records:
-        if exc_info:
-            print(f"{logger_message}. {exc_info[0].__name__}: {exc_info[1]}")
-            if logger.level <= logging.INFO:
-                print_exception(*exc_info)
-        else:
-            print(logger_message)
+    error_capture_handlers = [handler for handler in logger.handlers if isinstance(handler, ErrorCaptureHandler)]
+    if len(error_capture_handlers) > 0:
+        print("=== ERRORS ===")
+        for logger_message, exc_info in error_capture_handlers[0].records:
+            if exc_info:
+                print(f"{logger_message}. {exc_info[0].__name__}: {exc_info[1]}")
+                if logger.level <= logging.INFO:
+                    print_exception(*exc_info)
+            else:
+                print(logger_message)
     print("=== SUMMARY ===")
     print(f"Processed: {n_processed}; Skipped: {n_skipped}; Failed: {n_failed}.")
+    return (n_processed, n_skipped, n_failed)
