@@ -1,11 +1,12 @@
 import argparse
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from .common import get_console_logger, process_changed_documents
 
 
-def get_local_documents(root_path: Path, source_name: str = "") -> dict[str, str]:
+def get_local_documents(root_path: Path, source_name: str = "") -> Iterator[tuple[str, str]]:
     """Returns all files in the root folder and its subfolders.
     Returns a dictionary with source_uri's (absolute paths with timestamps) as the keys and
     display_name's (paths relative to the root directory) as the values.
@@ -14,7 +15,6 @@ def get_local_documents(root_path: Path, source_name: str = "") -> dict[str, str
     root_path = root_path.absolute()
     if not root_path.exists():
         raise RuntimeError(f"Error: Root directory '{root_path}' does not exist.")
-    local_documents = {}
     # Use Path.walk (Python 3.12+) to efficiently prune directories
     for root, dirs, files in root_path.walk():
         # Exclude directories starting with a period, like .git, .venv, etc
@@ -32,8 +32,7 @@ def get_local_documents(root_path: Path, source_name: str = "") -> dict[str, str
                     "",
                 )
             )
-            local_documents[source_uri] = file_path.relative_to(root_path).as_posix()
-    return local_documents
+            yield source_uri, file_path.relative_to(root_path).as_posix()
 
 
 def local_downloader(source_uri: str) -> Path:

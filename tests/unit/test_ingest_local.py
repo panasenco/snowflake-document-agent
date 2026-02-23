@@ -16,29 +16,30 @@ def test_get_local_documents_basic(tmp_path):
     p2.write_text("content2")
 
     # Execute
-    docs = get_local_documents(d, "local")
+    docs_gen = get_local_documents(d, "local")
 
-    # Verify - should return dict[str, str] (URI -> display_name)
-    assert len(docs) == 2
+    # Convert to list for verification - should return Iterator[tuple[str, str]] (URI, display_name)
+    docs_list = list(docs_gen)
+    assert len(docs_list) == 2
 
-    # URIs should now contain absolute paths with query parameters
-    uris = list(docs.keys())
-    assert len(uris) == 2
+    # Find tuple that corresponds to our files
+    file1_tuple = next(((uri, display_name) for uri, display_name in docs_list if "file1.txt" in uri), None)
+    file2_tuple = next(((uri, display_name) for uri, display_name in docs_list if "subdir/file2.txt" in uri), None)
 
-    # Find URIs that correspond to our files
-    file1_uri = next((uri for uri in uris if "file1.txt" in uri), None)
-    file2_uri = next((uri for uri in uris if "subdir/file2.txt" in uri), None)
+    assert file1_tuple is not None
+    assert file2_tuple is not None
 
-    assert file1_uri is not None
-    assert file2_uri is not None
+    file1_uri, file1_display_name = file1_tuple
+    file2_uri, file2_display_name = file2_tuple
+
     assert file1_uri.startswith("file://local/")
     assert file2_uri.startswith("file://local/")
-    assert "mtime=" in file1_uri  # Should have query parameter
-    assert "mtime=" in file2_uri
+    assert "m=" in file1_uri  # Should have query parameter
+    assert "m=" in file2_uri
 
-    # Values should be display names (relative paths)
-    assert docs[file1_uri] == "file1.txt"
-    assert docs[file2_uri] == "subdir/file2.txt"
+    # Display names should be relative paths
+    assert file1_display_name == "file1.txt"
+    assert file2_display_name == "subdir/file2.txt"
 
 
 def test_get_local_documents_ignores_hidden(tmp_path):
@@ -58,29 +59,31 @@ def test_get_local_documents_ignores_hidden(tmp_path):
     (hidden_dir / "file_in_hidden.txt").write_text("content")
 
     # Execute
-    docs = get_local_documents(d, "local")
+    docs_gen = get_local_documents(d, "local")
 
-    # Verify - should return dict[str, str] (URI -> display_name)
-    assert len(docs) == 1
+    # Convert to list for verification - should return Iterator[tuple[str, str]] (URI, display_name)
+    docs_list = list(docs_gen)
+    assert len(docs_list) == 1
 
-    # Get the single URI and verify it corresponds to visible.txt
-    visible_uri = next(iter(docs.keys()))
+    # Get the single tuple and verify it corresponds to visible.txt
+    visible_uri, visible_display_name = docs_list[0]
     assert "visible.txt" in visible_uri
     assert visible_uri.startswith("file://local/")
-    assert "mtime=" in visible_uri
+    assert "m=" in visible_uri
 
     # Verify no hidden files are included by checking all URIs
-    for uri in docs.keys():
+    for uri, display_name in docs_list:
         assert ".hidden" not in uri
         assert "file_in_hidden" not in uri
 
     # Verify the display name is correct
-    assert docs[visible_uri] == "visible.txt"
+    assert visible_display_name == "visible.txt"
 
 
 def test_get_local_documents_non_existent_root():
     with pytest.raises(RuntimeError, match="does not exist"):
-        get_local_documents(Path("/non/existent/path"), "local")
+        # Generator functions don't execute until consumed, so we need to consume it
+        list(get_local_documents(Path("/non/existent/path"), "local"))
 
 
 def test_local_downloader_basic(tmp_path):
@@ -147,7 +150,7 @@ def test_local_downloader_with_query_parameters(tmp_path):
 
     # Create URI with query parameters (like what get_local_documents produces)
     base_uri = p1.as_uri().replace("file://", "file://local")
-    uri_with_params = f"{base_uri}?mtime=1234567890.123"
+    uri_with_params = f"{base_uri}?m=1234567890"
 
     # Test downloading - should ignore query parameters
     result = local_downloader(uri_with_params)
@@ -170,11 +173,12 @@ def test_integration_get_documents_and_downloader(tmp_path):
     p2.write_text("content2")
 
     # Get documents
-    docs = get_local_documents(d, "local")
-    assert len(docs) == 2
+    docs_gen = get_local_documents(d, "local")
+    docs_list = list(docs_gen)
+    assert len(docs_list) == 2
 
     # Test that each URI from get_local_documents can be downloaded
-    for source_uri, display_name in docs.items():
+    for source_uri, display_name in docs_list:
         downloaded_path = local_downloader(source_uri)
         assert downloaded_path.exists()
         assert downloaded_path.is_file()
