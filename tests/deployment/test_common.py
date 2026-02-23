@@ -573,44 +573,53 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
             raise ValueError(f"Unknown URI: {source_uri}")
 
     # Execute process_changed_documents - should not crash despite failures
-    process_changed_documents(
+    kitchen_processed, kitchen_skipped, kitchen_failed = process_changed_documents(
         sources,
         connection=snowflake_conn,
         downloader=test_downloader,
         prefix="test://kitchen/",
         config=test_config,
         max_workers=4,  # Use parallel processing for testing
+        update_display_names=True,
         logger=mock_logger,
     )
 
+    # Kitchen sink test: 9 sources total
+    # 6 should succeed: success.txt, success.html, cuad-sponsorship.pdf, mammoth-tables.docx, multi-worksheet.xlsx, invalid_utf8.html
+    # 3 should fail: missing.txt, bad_extension.xyz, actually_excel.pdf
+    # 0 should be skipped: no duplicates or existing documents
+    assert kitchen_processed == 6, f"Expected 6 successful documents, got {kitchen_processed}"
+    assert kitchen_skipped == 0, f"Expected 0 skipped documents, got {kitchen_skipped}"
+    assert kitchen_failed == 3, f"Expected 3 failed documents, got {kitchen_failed}"
+
     # === VERIFICATIONS ===
 
-    logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
-    print(f"DEBUG: Got {mock_logger.error.call_count} error logs:")
-    for i, error in enumerate(logged_errors):
-        print(f"  {i + 1}. {error}")
+    logged_exceptions = [call.args[0] for call in mock_logger.exception.call_args_list]
+    print(f"DEBUG: Got {mock_logger.exception.call_count} exception logs:")
+    for i, exception in enumerate(logged_exceptions):
+        print(f"  {i + 1}. {exception}")
 
-    # Should have logged errors for the 3 failing documents
-    assert mock_logger.error.call_count == 3, (
-        f"Expected 3 error logs (one per failure), got {mock_logger.error.call_count}"
+    # Should have logged exceptions for the 3 failing documents
+    assert mock_logger.exception.call_count == 3, (
+        f"Expected 3 exception logs (one per failure), got {mock_logger.exception.call_count}"
     )
 
     # Verify each expected failure was logged with source URI
     expected_failures = [
-        ("missing.txt", "FileNotFoundError"),
-        ("bad_extension.xyz", "unsupported extension"),
-        ("actually_excel.pdf", "isn't supported"),  # Excel file with .pdf extension should fail parsing
+        "missing.txt",
+        "bad_extension.xyz",
+        "actually_excel.pdf",
     ]
 
-    for expected_file, expected_error_type in expected_failures:
+    for expected_file in expected_failures:
         matching_log = None
-        for logged_error in logged_errors:
-            if expected_file in logged_error and expected_error_type.lower() in logged_error.lower():
-                matching_log = logged_error
+        for logged_exception in logged_exceptions:
+            if expected_file in logged_exception and "Error uploading or parsing" in logged_exception:
+                matching_log = logged_exception
                 break
 
         assert matching_log is not None, (
-            f"Expected error log containing '{expected_file}' and '{expected_error_type}'. Got: {logged_errors}"
+            f"Expected exception log containing '{expected_file}' and 'Error uploading or parsing'. Got: {logged_exceptions}"
         )
 
     # Verify successful documents were processed (check database)
@@ -700,7 +709,7 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
                     f"Expected '{expected_text}' in metadata for pattern {source_uri_pattern}: {metadata_result[0][:200]}..."
                 )
 
-    print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_errors)} errors")
+    print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_exceptions)} errors")
 
 
 @pytest.mark.deployment
@@ -713,6 +722,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     3. delete_missing=True + broken iterator: No deletion due to incomplete iteration (safety)
     4. Existing documents (in both sources and Snowflake) - skips them
     5. Calls refresh_search_services when there are changes
+    6. Duplicate URI handling: Same source_uri appears multiple times - should only process first occurrence
     """
     if not snowflake_conn:
         pytest.skip("No Snowflake connection")
@@ -772,14 +782,20 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     print("Processing initial documents")
 
     # Process initial documents
-    process_changed_documents(
+    initial_processed, initial_skipped, initial_failed = process_changed_documents(
         initial_sources,
         connection=snowflake_conn,
         downloader=mock_downloader,
         prefix=prefix,
         config=test_config,
         max_workers=4,
+        update_display_names=True,
     )
+
+    # Verify initial processing counts
+    assert initial_processed == 3, f"Expected 3 initial documents processed, got {initial_processed}"
+    assert initial_skipped == 0, f"Expected 0 initial documents skipped, got {initial_skipped}"
+    assert initial_failed == 0, f"Expected 0 initial documents failed, got {initial_failed}"
 
     # Verify initial setup worked
     initial_docs_in_snowflake = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
@@ -808,6 +824,11 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
             f"test://project/doc4.html?timestamp={int(datetime(2024, 1, 5, 16, 0, 0, tzinfo=timezone.utc).timestamp())}",
             "Document 4",
         ),
+        # DUPLICATE URI TEST: Same source_uri as doc3 but with different display name (should be skipped with warning)
+        (
+            f"test://project/doc3.xlsx?timestamp={int(datetime(2024, 1, 4, 14, 0, 0, tzinfo=timezone.utc).timestamp())}",
+            "Document 3 - Duplicate Display Name",  # Should be skipped with warning (same URI as above)
+        ),
     ]
     # Note: old_doc.docx is in Snowflake but not in current_sources
 
@@ -817,7 +838,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     print("Phase 1: delete_missing = False (default)")
 
     with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
-        process_changed_documents(
+        phase1_processed, phase1_skipped, phase1_failed = process_changed_documents(
             current_sources,
             connection=snowflake_conn,
             downloader=mock_downloader,
@@ -825,12 +846,20 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
             config=test_config,
             delete_missing=False,  # TDD: This parameter doesn't exist yet - should fail
             max_workers=4,
+            update_display_names=True,
         )
 
         # Verify refresh_search_services was called (there were changes: 2 new docs)
         assert mock_refresh.call_count == 1, (
             f"Expected refresh_search_services to be called once, got {mock_refresh.call_count}"
         )
+
+    # Phase 1: Process 4 unique documents, skip 1 duplicate
+    # 2 existing docs (updated display names) + 2 new docs = 4 processed
+    # 1 duplicate should be skipped
+    assert phase1_processed == 4, f"Expected 4 processed (2 updated + 2 new), got {phase1_processed}"
+    assert phase1_skipped == 1, f"Expected 1 skipped (duplicate), got {phase1_skipped}"
+    assert phase1_failed == 0, f"Expected 0 failed, got {phase1_failed}"
 
     # Verify old_doc was NOT deleted (should have 5 docs: 3 original + 2 new)
     phase1_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
@@ -852,7 +881,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     print("Phase 2: delete_missing = True")
 
     with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
-        process_changed_documents(
+        phase2_processed, phase2_skipped, phase2_failed = process_changed_documents(
             current_sources,  # Same sources as before
             connection=snowflake_conn,
             downloader=mock_downloader,
@@ -860,12 +889,19 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
             config=test_config,
             delete_missing=True,
             max_workers=4,
+            update_display_names=True,
         )
 
         # Verify refresh_search_services was called (there were changes: 1 deleted)
         assert mock_refresh.call_count == 1, (
             f"Expected refresh_search_services to be called once, got {mock_refresh.call_count}"
         )
+
+    # Phase 2: Same sources again, all should be skipped (documents already exist + duplicate detection)
+    # 4 existing docs skipped + 1 duplicate skipped = 5 total skipped
+    assert phase2_processed == 0, f"Expected 0 processed (all docs exist), got {phase2_processed}"
+    assert phase2_skipped == 5, f"Expected 5 skipped (4 existing + 1 duplicate), got {phase2_skipped}"
+    assert phase2_failed == 0, f"Expected 0 failed, got {phase2_failed}"
 
     # === VERIFY PHASE 2 RESULTS (do this immediately after Phase 2) ===
     phase2_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
@@ -932,7 +968,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
         # This should process some docs but fail before completion, preventing deletion
         broken_sources = BrokenIterator(current_sources, break_after=2)
-        process_changed_documents(
+        phase3_processed, phase3_skipped, phase3_failed = process_changed_documents(
             broken_sources,
             connection=snowflake_conn,
             downloader=mock_downloader,
@@ -940,10 +976,18 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
             config=test_config,
             delete_missing=True,  # Even with True, should not delete due to broken iterator
             max_workers=4,
+            update_display_names=True,
         )
 
         # Should still call refresh if any docs were processed before the failure
         # (depends on implementation details)
+
+    # Phase 3: Broken iterator should process some docs before failing
+    # Broken iterator yields first 2 sources before failing
+    # Since documents already exist from previous phases, they should be skipped
+    assert phase3_processed == 0, f"Expected 0 processed (docs already exist), got {phase3_processed}"
+    assert phase3_skipped == 2, f"Expected 2 skipped (first 2 sources before iterator fails), got {phase3_skipped}"
+    assert phase3_failed == 0, f"Expected 0 failed (iterator failure doesn't count as doc failure), got {phase3_failed}"
 
     # === VERIFY PHASE 3 RESULTS ===
     post_broken_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
@@ -968,8 +1012,16 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
         )
         doc2_metadata = cursor.fetchone()
 
+        # Check display name for doc3 (duplicate URI test)
+        cursor.execute(
+            "SELECT source_uri, display_name FROM test_document_metadata WHERE source_uri LIKE :1 ORDER BY source_uri",
+            ("test://project/doc3.xlsx?timestamp=%",),
+        )
+        doc3_metadata = cursor.fetchone()
+
         print(f"Doc1 metadata: {doc1_metadata}")
         print(f"Doc2 metadata: {doc2_metadata}")
+        print(f"Doc3 metadata: {doc3_metadata}")
 
         # Verify display names were updated
         assert doc1_metadata[1] == "Document 1 - Updated Name", (
@@ -977,6 +1029,12 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
         )
         assert doc2_metadata[1] == "Document 2 - Updated Name", (
             f"Expected updated display name for doc2, got {doc2_metadata[1]}"
+        )
+
+        # DUPLICATE URI BUG TEST: Verify doc3 has the FIRST display name, not the duplicate
+        assert doc3_metadata[1] == "Document 3", (
+            f"Expected 'Document 3' (first occurrence), got '{doc3_metadata[1]}' - "
+            f"this indicates the duplicate overwrote the original display name"
         )
 
     # Verify content was actually stored for new documents
@@ -999,13 +1057,14 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     mock_logger = MagicMock()
 
     with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh_no_changes:
-        process_changed_documents(
+        no_change_processed, no_change_skipped, no_change_failed = process_changed_documents(
             current_sources,  # Same sources as before - no changes
             connection=snowflake_conn,
             downloader=mock_downloader,
             prefix=prefix,
             config=test_config,
             max_workers=1,
+            update_display_names=True,
             logger=mock_logger,
         )
 
@@ -1013,6 +1072,12 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
         assert mock_refresh_no_changes.call_count == 0, (
             f"Expected refresh_search_services NOT to be called when no changes, got {mock_refresh_no_changes.call_count}"
         )
+
+    # No changes test: Should skip all documents (already processed + duplicate detection)
+    # 4 existing docs skipped + 1 duplicate skipped = 5 total skipped
+    assert no_change_processed == 0, f"Expected 0 processed (no changes), got {no_change_processed}"
+    assert no_change_skipped == 5, f"Expected 5 skipped (4 existing + 1 duplicate), got {no_change_skipped}"
+    assert no_change_failed == 0, f"Expected 0 failed, got {no_change_failed}"
 
     # Verify no errors were logged for no changes
     no_change_errors = [call.args[0] for call in mock_logger.error.call_args_list]
@@ -1052,16 +1117,20 @@ def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema
     sources = [(source_uri, display_name)]
 
     # process_changed_documents doesn't raise exceptions for individual doc failures - it handles them gracefully
-    process_changed_documents(
+    orphan_processed, orphan_skipped, orphan_failed = process_changed_documents(
         sources,
         connection=snowflake_conn,
         downloader=mock_downloader,
         prefix="test://orphaned/",
         config=test_config,
         max_workers=1,  # Use single worker to ensure predictable behavior
+        update_display_names=True,
     )
 
-    # No return value check needed since process_changed_documents doesn't return a boolean
+    # Orphaned data test: Should have 1 failure (the bad document that fails processing)
+    assert orphan_processed == 0, f"Expected 0 processed (document fails), got {orphan_processed}"
+    assert orphan_skipped == 0, f"Expected 0 skipped, got {orphan_skipped}"
+    assert orphan_failed == 1, f"Expected 1 failed (the problematic document), got {orphan_failed}"
 
     # === VERIFY NO ORPHANED DATA ===
     # The bug is that failed documents leave partial data in some tables but not others
