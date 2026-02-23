@@ -225,7 +225,16 @@ def main() -> None:
         "-p", "--prefix", default="opentext", help="URI scheme prefix for the documents (default: opentext)"
     )
     parser.add_argument(
-        "-d", "--delete-missing", action="store_true", help="URI scheme prefix for the documents (default: opentext)"
+        "-d",
+        "--delete-missing",
+        action="store_true",
+        help="Set to delete Snowflake documents matching the prerix that are not in the source. The default behavior is to add and update only.",
+    )
+    parser.add_argument(
+        "-n",
+        "--no-rename",
+        action="store_true",
+        help="Set to not update the display name of already-present documents. The default behavior is to update the display name.",
     )
     parser.add_argument(
         "-v",
@@ -237,7 +246,7 @@ def main() -> None:
 
     args = parser.parse_args()
     logger = get_console_logger(args.verbose)
-    opentext_downloader = OpenTextDownloader()
+    opentext_downloader = OpenTextDownloader(logger=logger)
     logger.info(f"Getting OpenText documents in root nodes {args.node_ids}...")
     opentext_documents = opentext_downloader.get_opentext_documents(args.node_ids, prefix=args.prefix)
     process_changed_documents(
@@ -246,6 +255,7 @@ def main() -> None:
         downloader=opentext_downloader,
         prefix=f"{args.prefix}://",
         delete_missing=args.delete_missing,
+        update_display_names=not args.no_rename,
         logger=logger,
     )
 
