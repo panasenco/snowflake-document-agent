@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
-from .common import get_console_logger, process_changed_documents
+from .common import parse_common_options, process_changed_documents
 
 
 def is_retriable_requests_error(e: Exception) -> bool:
@@ -222,44 +222,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest OpenText documents into Snowflake.")
     parser.add_argument("node_ids", nargs="+", type=int, help="OpenText node IDs to process")
     parser.add_argument(
-        "-c", "--snowflake-connection", default="default", help="Name of Snowflake connection to use (default: default)"
-    )
-    parser.add_argument(
         "-p", "--prefix", default="opentext", help="URI scheme prefix for the documents (default: opentext)"
     )
-    parser.add_argument(
-        "-d",
-        "--delete-missing",
-        action="store_true",
-        help="Set to delete Snowflake documents matching the prerix that are not in the source. The default behavior is to add and update only.",
-    )
-    parser.add_argument(
-        "-u",
-        "--update-display-names",
-        action="store_true",
-        help="Set to update the display names of already-present documents. The default behavior is to not update the display names.",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        help="Be verbose. Include once for INFO output, twice for DEBUG output.",
-        action="count",
-        default=0,
-    )
+    args, process_changed_documents_params, logger = parse_common_options(parser)
 
-    args = parser.parse_args()
-    logger = get_console_logger(args.verbose)
     opentext_downloader = OpenTextDownloader(logger=logger)
     logger.info(f"Getting OpenText documents in root nodes {args.node_ids}...")
-    opentext_documents = opentext_downloader.get_opentext_documents(args.node_ids, prefix=args.prefix)
     process_changed_documents(
-        opentext_documents,
-        connection=args.snowflake_connection,
+        opentext_downloader.get_opentext_documents(args.node_ids, prefix=args.prefix),
         downloader=opentext_downloader,
         prefix=f"{args.prefix}://",
-        delete_missing=args.delete_missing,
-        update_display_names=args.update_display_names,
-        logger=logger,
+        **process_changed_documents_params,
     )
 
 

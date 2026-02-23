@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-from .common import get_console_logger, process_changed_documents
+from .common import parse_common_options, process_changed_documents
 
 
 def get_local_documents(root_path: Path, source_name: str = "") -> Iterator[tuple[str, str]]:
@@ -54,32 +54,19 @@ def main() -> None:
         help="Root directory containing documents",
     )
     parser.add_argument(
-        "-c", "--snowflake-connection", default="default", help="Name of Snowflake connection to use (default: default)"
-    )
-    parser.add_argument(
         "-n",
         "--source-name",
         default="",
         help="Name of the source to insert into the URI. Placed in the 'netloc' section of the URI.",
     )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        help="Be verbose. Include once for INFO output, twice for DEBUG output.",
-        action="count",
-        default=0,
-    )
-    args = parser.parse_args()
-    logger = get_console_logger(args.verbose)
+    args, process_changed_documents_params, logger = parse_common_options(parser)
     root_path = Path(args.root_dir)
     logger.info(f"Getting local documents in {root_path}...")
-    local_documents = get_local_documents(root_path=root_path, source_name=args.source_name)
     process_changed_documents(
-        local_documents,
-        connection=args.snowflake_connection,
+        get_local_documents(root_path=root_path, source_name=args.source_name),
         downloader=local_downloader,
         prefix=f"file://{args.source_name}",
-        logger=logger,
+        **process_changed_documents_params,
     )
 
 
