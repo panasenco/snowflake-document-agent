@@ -320,6 +320,7 @@ def process_document(
     logger: Logger = getLogger(),
 ) -> bool:
     """Process a single document end-to-end. Returns True if a document change was processed, False otherwise."""
+    name = f"{source_uri} ({display_name})"  # Convenient shorthand for document name
     processed = False
     local_path = downloader(source_uri)
     source_uri_new = False
@@ -335,7 +336,7 @@ def process_document(
                 match document_type:
                     case "htm" | "html" | "txt":
                         # Upload the contents directly
-                        logger.info(f"Uploading contents of {source_uri} directly...")
+                        logger.info(f"Uploading contents of {name} directly...")
                         set_document_text(
                             cursor,
                             table_prefix=table_prefix,
@@ -344,9 +345,9 @@ def process_document(
                         )
                     case "xls" | "xlsx" | "xlsm":
                         # Convert Excel to HTML
-                        logger.info(f"Converting Excel document {source_uri} to HTML...")
+                        logger.info(f"Converting Excel document {name} to HTML...")
                         document_html = excel_to_html(local_path)
-                        logger.info(f"Uploading converted HTML contents of {source_uri} directly...")
+                        logger.info(f"Uploading converted HTML contents of {name} directly...")
                         set_document_text(
                             cursor,
                             table_prefix=table_prefix,
@@ -355,9 +356,9 @@ def process_document(
                         )
                     case "doc" | "docx":
                         # Convert Word to HTML
-                        logger.info(f"Converting Word document {source_uri} to HTML...")
+                        logger.info(f"Converting Word document {name} to HTML...")
                         document_html = word_doc_to_html(local_path)
-                        logger.info(f"Uploading converted HTML contents of {source_uri} directly...")
+                        logger.info(f"Uploading converted HTML contents of {name} directly...")
                         set_document_text(
                             cursor,
                             table_prefix=table_prefix,
@@ -366,11 +367,11 @@ def process_document(
                         )
                     case _:
                         # Parse in Snowflake
-                        logger.info(f"Uploading document {source_uri} to Snowflake...")
+                        logger.info(f"Uploading document {name} to Snowflake...")
                         stage_path = stage_document(
                             cursor, table_prefix=table_prefix, source_uri=source_uri, local_path=local_path
                         )
-                        logger.info(f"Parsing document {source_uri} in Snowflake...")
+                        logger.info(f"Parsing document {name} in Snowflake...")
                         parse_document(
                             cursor,
                             table_prefix=table_prefix,
@@ -379,7 +380,7 @@ def process_document(
                         )
                 processed = True
             except Exception as err:
-                logger.error(f"Error uploading or parsing {source_uri} - removing version. {type(err).__name__}: {err}")
+                logger.error(f"Error uploading or parsing {name} - removing version. {type(err).__name__}: {err}")
                 delete_document(
                     cursor,
                     source_uri,
@@ -400,7 +401,7 @@ def process_document(
             metadata_config_new = True
             # Generate synthetic metadata
             try:
-                logger.info(f"Generating synthetic metadata for document {source_uri}...")
+                logger.info(f"Generating synthetic metadata for document {name}...")
                 generate_document_metadata(
                     cursor,
                     table_prefix=table_prefix,
@@ -411,9 +412,7 @@ def process_document(
                 )
                 processed = True
             except Exception as err:
-                logger.error(
-                    f"Error generating metadata for {source_uri} - removing version. {type(err).__name__}: {err}"
-                )
+                logger.error(f"Error generating metadata for {name} - removing version. {type(err).__name__}: {err}")
                 delete_document(
                     cursor,
                     source_uri,
@@ -424,6 +423,7 @@ def process_document(
                 return False
         elif update_display_name and current_metadata_row[0] != display_name:
             # Update just the display name
+            logger.info(f"Updating the display name of {source_uri}: {current_metadata_row[0]} -> {display_name}...")
             cursor.execute(
                 f"update {table_prefix}document_metadata set display_name = :2 where source_uri = :1",
                 (source_uri, display_name),
@@ -440,7 +440,7 @@ def process_document(
             chunk_config_new = True
             # Split the document into chunks
             try:
-                logger.info(f"Chunking document {source_uri}...")
+                logger.info(f"Chunking document {name}...")
                 chunk_document(
                     cursor,
                     table_prefix=table_prefix,
@@ -450,9 +450,7 @@ def process_document(
                 )
                 processed = True
             except Exception as err:
-                logger.error(
-                    f"Error generating chunks for {source_uri} - removing version. {type(err).__name__}: {err}"
-                )
+                logger.error(f"Error generating chunks for {name} - removing version. {type(err).__name__}: {err}")
                 delete_document(
                     cursor,
                     source_uri,
@@ -464,7 +462,7 @@ def process_document(
                 return False
         if processed:
             # Commit the changes
-            logger.info(f"Processed {source_uri} - Deleting previous versions of text/metadata/chunks")
+            logger.info(f"Processed {name} - Deleting previous versions of text/metadata/chunks")
             source_pattern = get_source_pattern(source_uri)
             delete_rows(
                 cursor,

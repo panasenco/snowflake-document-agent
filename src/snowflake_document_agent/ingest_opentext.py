@@ -138,6 +138,7 @@ class OpenTextDownloader:
                 continue
             node_data = response.json()["data"]
             node_type = node_data["type_name"]
+            name = f"{node_id} ({node_data['name']})"  # Node name for logging
             match node_type:
                 case "Folder":
                     # Get child IDs
@@ -145,7 +146,7 @@ class OpenTextDownloader:
                         children_response = self.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
                     except requests.exceptions.HTTPError as err:
                         self.logger.error(
-                            f"Failed to get children for OpenText node {node_id}. {type(err).__name__}: {err}"
+                            f"Failed to get children for OpenText node {name}. {type(err).__name__}: {err}"
                         )
                         continue
                     children_data = children_response.json()["results"]
@@ -157,7 +158,7 @@ class OpenTextDownloader:
                         version = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()
                     except requests.exceptions.HTTPError as err:
                         self.logger.error(
-                            f"Failed to get version info for OpenText node {node_id}. {type(err).__name__}: {err}"
+                            f"Failed to get version info for OpenText node {name}. {type(err).__name__}: {err}"
                         )
                         continue
                     if version["data"]["file_type"]:
@@ -165,7 +166,7 @@ class OpenTextDownloader:
                     elif version["data"]["mime_type"]:
                         extension = guess_extension(version["data"]["mime_type"])
                     else:
-                        self.logger.error(f"Failed to determine extension for node {node_id}. {version=}")
+                        self.logger.error(f"Failed to determine extension for node {name}. {version=}")
                         continue
                     # Create source URI with extension
                     source_uri = urlunsplit(
