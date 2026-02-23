@@ -286,10 +286,10 @@ def test_get_opentext_documents_handles_http_errors():
     docs = list(docs_generator)  # Convert generator to list
 
     # Should log multiple errors (6 total: 404 node, 401 node, 404 children, 401 children, 404 version, 401 version)
-    assert mock_logger.error.call_count == 6
+    assert mock_logger.exception.call_count == 6
 
-    # Verify error messages contain relevant information
-    error_calls = [call[0][0] for call in mock_logger.error.call_args_list]
+    # Verify exception messages contain relevant information
+    error_calls = [call[0][0] for call in mock_logger.exception.call_args_list]
 
     # Check that we have errors for all the expected scenarios
     assert any("404" in msg and "node" in msg.lower() for msg in error_calls), "Should have node 404 error"

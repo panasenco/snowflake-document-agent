@@ -1,21 +1,21 @@
 from pathlib import Path
 
-from snowflake_document_agent.common import word_doc_to_html, excel_to_html
+from snowflake_document_agent.common import docx_to_html, excel_to_html
 
 
-def test_word_doc_to_html_basic():
+def test_docx_to_html_basic():
     """
-    Test that word_doc_to_html converts a DOCX file to HTML format.
+    Test that docx_to_html converts a DOCX file to HTML format.
     """
     # Use the fixture file
     fixture_docx = Path(__file__).parent.parent / "fixtures" / "mammoth-tables.docx"
     assert fixture_docx.exists(), f"Fixture file not found: {fixture_docx}"
 
     # Execute - Convert DOCX to HTML
-    html_content = word_doc_to_html(fixture_docx)
+    html_content = docx_to_html(fixture_docx)
 
     # Verify - Should return HTML content
-    assert html_content is not None, "word_doc_to_html returned None"
+    assert html_content is not None, "docx_to_html returned None"
     assert isinstance(html_content, str), f"Expected string, got {type(html_content)}"
     assert len(html_content.strip()) > 0, "HTML content is empty"
 

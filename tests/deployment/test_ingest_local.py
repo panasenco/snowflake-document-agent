@@ -72,35 +72,43 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
 
     # === PROCESS INITIAL DOCUMENTS ===
 
-    initial_sources = get_local_documents(docs_dir, "local")
+    initial_sources_gen = get_local_documents(docs_dir, "local")
+
+    # Convert to list ONLY for counting and verification
+    initial_sources_list = list(initial_sources_gen)
 
     # Verify we found all files
     expected_count = 4 + (1 if pdf_file else 0) + (1 if docx_file else 0)
-    assert len(initial_sources) == expected_count, f"Expected {expected_count} files, got {len(initial_sources)}"
+    assert len(initial_sources_list) == expected_count, (
+        f"Expected {expected_count} files, got {len(initial_sources_list)}"
+    )
+
+    # Get fresh generator for processing (since we consumed the previous one)
+    initial_sources_for_processing = get_local_documents(docs_dir, "local")
 
     # Mock refresh_search_services to avoid long execution time
     with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
         # Process initial documents
         process_changed_documents(
-            sources=initial_sources,
+            sources=initial_sources_for_processing,
             connection=snowflake_conn,
             downloader=local_downloader,
             prefix="file://local",
             config=test_config,
-            max_workers=1,  # SSO requires sequential processing
+            max_workers=4,
             logger=mock_logger,
         )
 
         # Check initial results
-        logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
-        print(f"DEBUG: Round 1 - Got {mock_logger.error.call_count} error logs:")
-        for i, error in enumerate(logged_errors):
+        logged_exceptions = [call.args[0] for call in mock_logger.exception.call_args_list]
+        print(f"DEBUG: Round 1 - Got {mock_logger.exception.call_count} exception logs:")
+        for i, error in enumerate(logged_exceptions):
             print(f"  {i + 1}. {error}")
 
-        # Should have errors for bad extension and fake PDF (2 failing documents)
-        expected_initial_errors = 2
-        assert mock_logger.error.call_count == expected_initial_errors, (
-            f"Expected {expected_initial_errors} error logs in round 1, got {mock_logger.error.call_count}"
+        # Should have exceptions for bad extension and fake PDF (2 failing documents)
+        expected_initial_exceptions = 2
+        assert mock_logger.exception.call_count == expected_initial_exceptions, (
+            f"Expected {expected_initial_exceptions} exception logs in round 1, got {mock_logger.exception.call_count}"
         )
 
         # Verify refresh_search_services was called in round 1 (there were changes)
@@ -139,10 +147,12 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         new_xlsx = subdir / "new_spreadsheet.xlsx"
         shutil.copy(xlsx_fixture, new_xlsx)
 
-    # Get updated sources BEFORE deleting race condition file
-    updated_sources = get_local_documents(docs_dir, "local")
+    # Get updated sources BEFORE deleting race condition file - need to capture as list
+    # so the race condition file is included even though we delete it afterward
+    updated_sources_gen = get_local_documents(docs_dir, "local")
+    updated_sources = list(updated_sources_gen)  # Capture as list before file deletion
 
-    # Now delete the race condition file to simulate it disappearing
+    # Now delete the race condition file to simulate it disappearing after discovery
     race_condition_file.unlink()
 
     # === PROCESS CHANGED DOCUMENTS ===
@@ -155,25 +165,28 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
             downloader=local_downloader,
             prefix="file://local",
             config=test_config,
-            max_workers=1,  # SSO requires sequential processing
+            max_workers=4,
+            delete_missing=True,  # Enable deletion of files removed from filesystem
             logger=mock_logger,
         )
 
         # Check round 2 results
-        logged_errors_round2 = [call.args[0] for call in mock_logger.error.call_args_list]
-        print(f"DEBUG: Round 2 - Got {mock_logger.error.call_count} error logs:")
-        for i, error in enumerate(logged_errors_round2):
+        logged_exceptions_round2 = [call.args[0] for call in mock_logger.exception.call_args_list]
+        print(f"DEBUG: Round 2 - Got {mock_logger.exception.call_count} exception logs:")
+        for i, error in enumerate(logged_exceptions_round2):
             print(f"  {i + 1}. {error}")
 
-        # Should have errors for fake PDF (still there) and missing race condition file
-        expected_round2_errors = 2
-        assert mock_logger.error.call_count == expected_round2_errors, (
-            f"Expected {expected_round2_errors} error logs in round 2, got {mock_logger.error.call_count}"
+        # Should have exceptions for fake PDF (still there) and missing race condition file
+        expected_round2_exceptions = 2
+        assert mock_logger.exception.call_count == expected_round2_exceptions, (
+            f"Expected {expected_round2_exceptions} exception logs in round 2, got {mock_logger.exception.call_count}"
         )
 
-        # Verify one error is for the race condition file (download failure)
-        race_condition_errors = [error for error in logged_errors_round2 if "race_condition.txt" in error]
-        assert len(race_condition_errors) == 1, f"Expected 1 race condition error, got: {race_condition_errors}"
+        # Verify one exception is for the race condition file (download failure)
+        race_condition_exceptions = [error for error in logged_exceptions_round2 if "race_condition.txt" in error]
+        assert len(race_condition_exceptions) == 1, (
+            f"Expected 1 race condition exception, got: {race_condition_exceptions}"
+        )
 
         # Verify refresh_search_services was called in round 2 (there were changes)
         assert mock_refresh.call_count == 1, (
@@ -185,7 +198,7 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
     with snowflake_conn.cursor() as cursor:
         # Check document_metadata table
         cursor.execute(
-            "SELECT source_uri FROM document_metadata WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
+            "SELECT source_uri FROM test_document_metadata WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
         )
         db_uris = [row[0] for row in cursor.fetchall()]
 
@@ -240,7 +253,7 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
 
         # Check document_text table has content for successful files only
         cursor.execute(
-            "SELECT source_uri FROM document_text WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
+            "SELECT source_uri FROM test_document_text WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
         )
         text_uris = [row[0] for row in cursor.fetchall()]
         print(f"DEBUG: document_text URIs: {text_uris}")
@@ -257,12 +270,14 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         success_txt_uri = next((uri for uri in db_uris if uri.startswith(success_txt_path)), None)
         assert success_txt_uri is not None, f"Could not find success.txt URI starting with {success_txt_path}"
 
-        cursor.execute("SELECT document_text FROM document_text WHERE source_uri = :1", (success_txt_uri,))
+        cursor.execute("SELECT document_text FROM test_document_text WHERE source_uri = :1", (success_txt_uri,))
         updated_content = cursor.fetchone()[0]
         assert "UPDATED content" in updated_content, "Updated file content not found in database"
 
         # Verify metadata generation worked (filename awareness)
-        cursor.execute("SELECT generated_metadata FROM document_metadata WHERE source_uri = :1", (success_txt_uri,))
+        cursor.execute(
+            "SELECT generated_metadata FROM test_document_metadata WHERE source_uri = :1", (success_txt_uri,)
+        )
         metadata_result = cursor.fetchone()
         if metadata_result:
             metadata_content = metadata_result[0]
@@ -302,7 +317,7 @@ def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_
             downloader=local_downloader,
             prefix="file://local",
             config=test_config,
-            max_workers=1,  # SSO requires sequential processing
+            max_workers=4,
             logger=mock_logger,
         )
 
@@ -323,15 +338,15 @@ def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_
             downloader=local_downloader,
             prefix="file://local",
             config=test_config,
-            max_workers=1,  # SSO requires sequential processing
+            max_workers=4,
             logger=mock_logger,
         )
 
         # Verify refresh was NOT called when there are no changes
         assert mock_refresh.call_count == 0, "Expected refresh_search_services NOT to be called when no changes"
 
-        # Verify no errors were logged
-        logged_errors = [call.args[0] for call in mock_logger.error.call_args_list]
-        assert len(logged_errors) == 0, f"Expected no errors when no changes, got: {logged_errors}"
+        # Verify no exceptions were logged
+        logged_exceptions = [call.args[0] for call in mock_logger.exception.call_args_list]
+        assert len(logged_exceptions) == 0, f"Expected no exceptions when no changes, got: {logged_exceptions}"
 
         print("No changes test completed - verified refresh_search_services is not called when no changes!")
