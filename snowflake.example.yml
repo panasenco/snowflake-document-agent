@@ -12,14 +12,18 @@ env:
   metadata_model: "claude-4-sonnet"
   metadata_first_chars: 4000
   metadata_prompt: |
-    I am going to provide a document which will be indexed by a retrieval system containing many similar documents.
-    I want you to provide key information associated with this document that can help differentiate this document in the index.
-    Follow these instructions:
-    1.  Do not dwell on low level details.
-        Only provide key high level information that a human might be expected to provide when searching for this doc.
-    2.  Do not use any formatting, just provide keys and values using a colon to separate key and value.
-        Have each key and value be on a new line.
-    3.  Only extract at most the most important keys and values that could be relevant for this document and used in retrieval.
+    Create a comma-separated list of keywords extracted from the document text.
+    The goal is to enable retrieval-augmented generation (RAG) for a document chatbot.
+
+    Generate keywords that would help retrieve relevant content.
+    Focus on:
+     - key concepts
+     - regulatory requirements
+     - procedural topics
+     - product features
+     - operational processes
+
+    Respond with just the keywords, no other text.
   chunk_size: 1800
   chunk_overlap: 300
   agent_name: "DOCUMENT_AGENT"
