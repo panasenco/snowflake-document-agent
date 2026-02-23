@@ -317,7 +317,7 @@ def process_document(
     metadata_config_hash: str,
     chunk_config: dict[str, Any],
     chunk_config_hash: str,
-    update_display_name: bool = True,
+    update_display_name: bool = False,
     logger: Logger = getLogger(),
 ) -> bool:
     """Process a single document end-to-end. Returns True if a document change was processed, False otherwise."""
@@ -511,7 +511,7 @@ def process_changed_documents(
     config: dict[str, Any] | None = None,
     max_workers: int = 8,
     delete_missing: bool = False,
-    update_display_names: bool = True,
+    update_display_names: bool = False,
     logger: Logger = getLogger(),
 ) -> None:
     """Process just the documents that have changed since the last ingestion into Snowflake.
@@ -521,7 +521,7 @@ def process_changed_documents(
     Ingests new or updated documents matching the prefix into Snowflake.
     Deletes old versions of successfully ingested documents, if any.
     If delete_missing is set, deletes matching documents that are only in Snowflake and are no longer in the source.
-    If update_display_names is set (default), updates the display names of otherwise unchanged documents.
+    If update_display_names is set, updates the display names of otherwise unchanged documents.
     """
     sources_iterator = iter(sources)
     if config is None:

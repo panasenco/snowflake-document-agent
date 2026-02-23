@@ -232,10 +232,10 @@ def main() -> None:
         help="Set to delete Snowflake documents matching the prerix that are not in the source. The default behavior is to add and update only.",
     )
     parser.add_argument(
-        "-n",
-        "--no-rename",
+        "-u",
+        "--update-display-names",
         action="store_true",
-        help="Set to not update the display name of already-present documents. The default behavior is to update the display name.",
+        help="Set to update the display names of already-present documents. The default behavior is to not update the display names.",
     )
     parser.add_argument(
         "-v",
@@ -256,7 +256,7 @@ def main() -> None:
         downloader=opentext_downloader,
         prefix=f"{args.prefix}://",
         delete_missing=args.delete_missing,
-        update_display_names=not args.no_rename,
+        update_display_names=args.update_display_names,
         logger=logger,
     )
 
