@@ -50,8 +50,8 @@ def test_get_opentext_documents_basic():
     with pytest.raises(StopIteration):
         next(docs_generator)
     assert source_uri.startswith("opentext://12345")
-    assert "version_number=1" in source_uri
-    assert "extension=.pdf" in source_uri
+    assert "v=1" in source_uri
+    assert "ext=.pdf" in source_uri
 
     # Should have correct display name
     assert display_name == "test_document.pdf"
@@ -123,8 +123,8 @@ def test_get_opentext_documents_handles_folder():
     with pytest.raises(StopIteration):
         next(docs_generator)
     assert source_uri.startswith("opentext://200")
-    assert "version_number=2" in source_uri
-    assert "extension=.docx" in source_uri
+    assert "v=2" in source_uri
+    assert "ext=.docx" in source_uri
 
     # Should have display name with parent folder
     assert display_name == "Documents/child_doc.docx"
@@ -187,8 +187,8 @@ def test_get_opentext_documents_handles_shortcut():
         next(docs_generator)
     # URI should use actual document's node ID (600) from the recursive call
     assert source_uri.startswith("opentext://600")
-    assert "version_number=1" in source_uri
-    assert "extension=.pdf" in source_uri
+    assert "v=1" in source_uri
+    assert "ext=.pdf" in source_uri
 
     # Should use shortcut name in display name (shortcut_name.pdf replaces actual_doc.pdf)
     assert display_name == "shortcut_name.pdf"
@@ -311,8 +311,8 @@ def test_get_opentext_documents_handles_http_errors():
     assert len(docs) == 1
     source_uri, display_name = docs[0]
     assert source_uri.startswith("opentext://300")
-    assert "version_number=1" in source_uri
-    assert "extension=.txt" in source_uri
+    assert "v=1" in source_uri
+    assert "ext=.txt" in source_uri
     assert display_name == "successful_doc.txt"
 
 
@@ -339,7 +339,7 @@ def test_opentext_downloader_call_basic():
             mock_get.return_value = mock_content_response
 
             # Test downloading a document using new URI format
-            result = downloader("opentext://12345?version_number=1&extension=.pdf")
+            result = downloader("opentext://12345?v=1&ext=.pdf")
 
             # Should return a Path
             assert isinstance(result, Path)
@@ -375,11 +375,11 @@ def test_opentext_downloader_call_invalid_uri_format():
 
         # Should error for URI missing extension parameter
         with pytest.raises(KeyError):
-            downloader("opentext://12345?version_number=1")
+            downloader("opentext://12345?v=1")
 
         # Should succeed for URI with empty netloc (but creates invalid API path)
         # This exposes that the implementation doesn't validate netloc properly
-        result = downloader("opentext://?extension=.pdf&version_number=1")
+        result = downloader("opentext://?ext=.pdf&v=1")
         assert isinstance(result, Path)
         # Should have made a call with empty node ID
         downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes//content")
@@ -389,7 +389,7 @@ def test_opentext_downloader_call_invalid_uri_format():
 
         # Should succeed for URI without netloc (path-based)
         # This also exposes that netloc validation is missing
-        result = downloader("opentext:///path/to/file.pdf?extension=.pdf&version_number=1")
+        result = downloader("opentext:///path/to/file.pdf?ext=.pdf&v=1")
         assert isinstance(result, Path)
         # Should have made a call with empty node ID (netloc is empty when path is used)
         downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes//content")

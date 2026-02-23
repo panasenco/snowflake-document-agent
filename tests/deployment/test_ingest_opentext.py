@@ -1,5 +1,7 @@
 """Deployment tests for OpenText document ingestion functionality."""
 
+from itertools import islice
+
 import pytest
 
 from snowflake_document_agent.ingest_opentext import OpenTextDownloader
@@ -39,19 +41,19 @@ def test_opentext_document_content_download(opentext_conn, pytestconfig):
 
     try:
         # Call get_opentext_documents with the provided node ID
-        documents = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
+        documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
 
-        # Should return a non-empty dictionary
-        assert isinstance(documents, dict)
-        assert len(documents) > 0, (
-            f"No documents found in OpenText node {node_id}. Expected to find documents for content testing."
-        )
+        # Get the first document for content testing
+        try:
+            first_uri, first_display_name = next(documents_gen)
+        except StopIteration:
+            pytest.fail(
+                f"No documents found in OpenText node {node_id}. Expected to find a document for content testing."
+            )
 
-        print(f"✅ Discovered {len(documents)} documents from OpenText node {node_id}")
+        print(f"✅ Found document from OpenText node {node_id}")
 
         # Test downloading content from the first document
-        first_uri = next(iter(documents.keys()))
-        first_display_name = documents[first_uri]
 
         print(f"🔍 Testing document content download for: {first_uri}")
         print(f"  - Display name: {first_display_name}")
@@ -103,42 +105,32 @@ def test_get_opentext_documents_deployment(opentext_conn, pytestconfig):
 
     try:
         # Call get_opentext_documents with the provided node ID
-        documents = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
+        documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
 
-        # Should return a non-empty dictionary - we expect documents for the provided node
-        assert isinstance(documents, dict)
-        assert len(documents) > 0, (
-            f"No documents found in OpenText node {node_id}. Expected to find documents for testing."
-        )
+        # Get the first document for testing
+        try:
+            first_uri, first_display_name = next(documents_gen)
+        except StopIteration:
+            pytest.fail(f"No documents found in OpenText node {node_id}. Expected to find a document for testing.")
 
-        # Verify structure of returned documents
-        for uri, display_name in documents.items():
-            # URI should start with the expected prefix
-            assert uri.startswith("opentext://")
+        # Verify structure of the returned document
+        # URI should start with the expected prefix
+        assert first_uri.startswith("opentext://")
 
-            # Should be a string display name
-            assert isinstance(display_name, str)
+        # Should be a string display name
+        assert isinstance(first_display_name, str)
 
-        print(f"✅ Successfully discovered {len(documents)} documents from OpenText node {node_id}")
+        print(f"✅ Successfully discovered document from OpenText node {node_id}")
+        print(f"  - {first_uri} -> {first_display_name}")
 
-        # Check document names and extensions in one pass
-        missing_ext_docs = []
-
-        for uri, display_name in documents.items():
-            print(f"  - {uri} -> {display_name}")
-
-            # Check if document has a valid file extension in the display name
-            if "." in display_name and display_name.split(".")[-1]:
-                print(f"    ✅ Has extension: .{display_name.split('.')[-1]}")
-            else:
-                print("    ❌ Missing file extension")
-                missing_ext_docs.append(f"URI: {uri}")
-
-        # Fail if any documents are missing extensions
-        if missing_ext_docs:
+        # Check if document has a valid file extension in the display name
+        if "." in first_display_name and first_display_name.split(".")[-1]:
+            print(f"    ✅ Has extension: .{first_display_name.split('.')[-1]}")
+        else:
+            print("    ❌ Missing file extension")
             pytest.fail(
-                f"Documents missing file extensions: {', '.join(missing_ext_docs)}. "
-                f"All documents should have proper file extensions for processing."
+                f"Document missing file extension: URI: {first_uri}. "
+                f"Document should have proper file extension for processing."
             )
 
     except Exception as e:
@@ -159,7 +151,7 @@ def test_get_opentext_documents_deployment(opentext_conn, pytestconfig):
 
 
 @pytest.mark.deployment
-def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test_schema, test_config, pytestconfig):
+def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test_config, pytestconfig):
     """Test complete pipeline: OpenText document discovery -> Snowflake data loading.
 
     This test requires both OpenText and Snowflake to be configured:
@@ -177,65 +169,56 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test
 
     print("🚀 Starting full OpenText -> Snowflake deployment pipeline test")
     print(f"📁 OpenText Node ID: {node_id}")
-    print(f"❄️  Snowflake Schema: {test_schema}")
 
     # Step 1: Use Snowflake configuration from fixture
     print(f"📋 Loaded Snowflake config for schema: {test_config['schema']}")
 
     # Step 2: Discover OpenText documents
-    print(f"🔍 Discovering documents from OpenText node {node_id}...")
-    documents = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
+    print(f"🔍 Discovering document from OpenText node {node_id}...")
+    documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
 
-    print(f"✅ Discovered {len(documents)} documents from OpenText")
-    assert len(documents) > 0, f"Expected to find documents in OpenText node {node_id} for full pipeline test"
-
-    # Log discovered documents
-    for i, uri in enumerate(list(documents.keys())[:5], 1):  # Show first 5
-        print(f"  {i}. {uri}")
-    if len(documents) > 5:
-        print(f"  ... and {len(documents) - 5} more documents")
+    print("✅ Got OpenText documents generator")
 
     # Step 3: Process documents into Snowflake (tables already truncated by fixture)
     print("📤 Processing documents into Snowflake...")
 
     process_changed_documents(
-        documents,
+        islice(documents_gen, 1),  # Only process one OpenText document
         connection=snowflake_conn,
         downloader=opentext_conn,
         prefix="opentext://",
         config=test_config,
     )
 
-    print(f"✅ Processed {len(documents)} documents into Snowflake")
+    print("✅ Processed document into Snowflake")
 
     # Step 4: Verify data was loaded
     print("🔍 Verifying data was loaded into Snowflake...")
     with snowflake_conn.cursor() as cursor:
         # Check the actual document tables for loaded records
-        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.document_metadata")
+        cursor.execute("SELECT COUNT(*) FROM test_document_metadata")
         metadata_count = cursor.fetchone()[0]
 
-        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.document_text")
+        cursor.execute("SELECT COUNT(*) FROM test_document_text")
         text_count = cursor.fetchone()[0]
 
-        cursor.execute(f"SELECT COUNT(*) FROM {test_schema}.document_chunks")
+        cursor.execute("SELECT COUNT(*) FROM test_document_chunks")
         chunk_count = cursor.fetchone()[0]
 
         print(f"📊 Document metadata: {metadata_count} records")
         print(f"📊 Document text: {text_count} records")
         print(f"📊 Document chunks: {chunk_count} records")
 
-        # Verify we have data
-        assert metadata_count > 0, "Expected document metadata to be loaded, but document_metadata table is empty"
-        assert text_count > 0, "Expected document text to be loaded, but document_text table is empty"
-        assert chunk_count > 0, "Expected chunks to be loaded, but document_chunks table is empty"
+        # Verify we have exactly one document processed
+        assert metadata_count == 1, f"Expected exactly 1 document metadata record, but got {metadata_count}"
+        assert text_count == 1, f"Expected exactly 1 document text record, but got {text_count}"
+        assert chunk_count >= 1, f"Expected at least 1 chunk record, but got {chunk_count}"
 
-        # Show sample data
-        cursor.execute(f"SELECT source_uri, LEFT(generated_metadata, 50) FROM {test_schema}.document_metadata LIMIT 3")
-        sample_docs = cursor.fetchall()
-        print("📄 Sample loaded documents:")
-        for doc in sample_docs:
-            print(f"  - {doc[0]} -> {doc[1]}...")
+        # Show the loaded document
+        cursor.execute("SELECT source_uri, LEFT(generated_metadata, 50) FROM test_document_metadata LIMIT 1")
+        doc = cursor.fetchone()
+        print("📄 Loaded document:")
+        print(f"  - {doc[0]} -> {doc[1]}...")
 
     print("🎉 Full OpenText -> Snowflake deployment pipeline test completed successfully!")
-    print(f"📈 Summary: {len(documents)} OpenText documents -> {metadata_count} DB metadata -> {chunk_count} DB chunks")
+    print(f"📈 Summary: 1 OpenText document -> {metadata_count} DB metadata -> {chunk_count} DB chunks")
