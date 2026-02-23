@@ -20,7 +20,7 @@ snowflake.connector.paramstyle = "numeric"
 
 ALL_TABLES = ["document_metadata", "document_text", "document_chunks"]
 # See https://docs.snowflake.com/en/user-guide/snowflake-cortex/parse-document#input-requirements
-CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "html", "html", "txt"}
+CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "htm", "html", "txt"}
 
 
 def get_console_logger(verbosity: int) -> Logger:
@@ -92,8 +92,8 @@ def stage_document(
     return (stage_parent + "/" + local_path.name) if stage_parent else local_path.name
 
 
-def word_doc_to_html(local_path: Path) -> str:
-    """Gets the contents a Word document (.doc/.docx) in HTML format."""
+def docx_to_html(local_path: Path) -> str:
+    """Gets the contents a .docx (NOT .doc) Word document in HTML format."""
     with open(local_path, "rb") as docx_file:
         result = mammoth.convert_to_html(docx_file)
         return result.value
@@ -155,7 +155,8 @@ def parse_document(
     )
     # Verify the content was inserted/updated successfully
     cursor.execute(
-        f"SELECT substring(document_text, 1, 100) FROM {table_prefix}document_text WHERE source_uri = :1", (source_uri,)
+        f"SELECT substring(document_text, 1, 1000) FROM {table_prefix}document_text WHERE source_uri = :1",
+        (source_uri,),
     )
     result = cursor.fetchone()
     if result is None:
@@ -354,10 +355,10 @@ def process_document(
                             source_uri=source_uri,
                             text=document_html,
                         )
-                    case "doc" | "docx":
-                        # Convert Word to HTML
+                    case "docx":
+                        # Convert Word docx to HTML
                         logger.info(f"Converting Word document {name} to HTML...")
-                        document_html = word_doc_to_html(local_path)
+                        document_html = docx_to_html(local_path)
                         logger.info(f"Uploading converted HTML contents of {name} directly...")
                         set_document_text(
                             cursor,
