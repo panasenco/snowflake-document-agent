@@ -28,6 +28,8 @@ uv sync
 
 </details>
 
+<details>
+
 <summary>Manual install using pyenv</summary>
 
 If you're in an environment where `uv` doesn't work well, you can use `pyenv` instead:
