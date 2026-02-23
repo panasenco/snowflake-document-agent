@@ -316,6 +316,7 @@ def process_document(
     metadata_config_hash: str,
     chunk_config: dict[str, Any],
     chunk_config_hash: str,
+    update_display_name: bool = True,
     logger: Logger = getLogger(),
 ) -> bool:
     """Process a single document end-to-end. Returns True if a document change was processed, False otherwise."""
@@ -421,7 +422,7 @@ def process_document(
                     metadata_config_hash=metadata_config_hash if metadata_config_new else None,
                 )
                 return False
-        elif current_metadata_row[0] != display_name:
+        elif update_display_name and current_metadata_row[0] != display_name:
             # Update just the display name
             cursor.execute(
                 f"update {table_prefix}document_metadata set display_name = :2 where source_uri = :1",
@@ -511,15 +512,17 @@ def process_changed_documents(
     config: dict[str, Any] | None = None,
     max_workers: int = 8,
     delete_missing: bool = False,
+    update_display_names: bool = True,
     logger: Logger = getLogger(),
 ) -> None:
     """Process just the documents that have changed since the last ingestion into Snowflake.
     Accepts an iterable (list or generator) of (source_uri, display_name) tuples.
     Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
     Accepts a Snowflake connection as either a connection name (string) or a connection object.
-    Deletes the documents matching the prefix that are only in Snowflake and no longer in the source.
     Ingests new or updated documents matching the prefix into Snowflake.
     Deletes old versions of successfully ingested documents, if any.
+    If delete_missing is set, deletes matching documents that are only in Snowflake and are no longer in the source.
+    If update_display_names is set (default), updates the display names of otherwise unchanged documents.
     """
     sources_iterator = iter(sources)
     if config is None:
@@ -566,6 +569,7 @@ def process_changed_documents(
                         metadata_config_hash,
                         chunk_config,
                         chunk_config_hash,
+                        update_display_names,
                         logger,
                     )
                     future_uris[future] = source_uri
