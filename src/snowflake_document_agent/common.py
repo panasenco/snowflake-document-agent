@@ -1,3 +1,4 @@
+from argparse import ArgumentParser, Namespace
 from collections.abc import Iterable
 from concurrent.futures import wait, ThreadPoolExecutor, FIRST_COMPLETED
 from hashlib import sha1
@@ -48,6 +49,46 @@ def get_console_logger(verbosity: int) -> Logger:
     logger.addHandler(console_handler)
     logger.addHandler(ErrorCaptureHandler())
     return logger
+
+
+def parse_common_options(parser: ArgumentParser) -> tuple[Namespace, dict[str, Any], Logger]:
+    """Convenience function for common options and outputs to a parser object.
+    1. Adds common arguments to the parser.
+    2. Parses the arguments.
+    3. Returns a tuple (parser_arguments, process_changed_documents_params, logger)
+    NOTE to not use -c, -d, -u, or -v in ingester-specific arguments!
+    """
+    parser.add_argument(
+        "-c", "--snowflake-connection", default="default", help="Name of Snowflake connection to use (default: default)"
+    )
+    parser.add_argument(
+        "-d",
+        "--delete-missing",
+        action="store_true",
+        help="Set to delete Snowflake documents matching the prerix that are not in the source. The default behavior is to add and update only.",
+    )
+    parser.add_argument(
+        "-u",
+        "--update-display-names",
+        action="store_true",
+        help="Set to update the display names of already-present documents. The default behavior is to not update the display names.",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        help="Be verbose. Include once for INFO output, twice for DEBUG output.",
+        action="count",
+        default=0,
+    )
+    args = parser.parse_args()
+    logger = get_console_logger(args.verbose)
+    process_changed_documents_params = {
+        "connection": args.snowflake_connection,
+        "delete_missing": args.delete_missing,
+        "update_display_names": args.update_display_names,
+        "logger": logger,
+    }
+    return args, process_changed_documents_params, logger
 
 
 def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
@@ -644,8 +685,10 @@ def process_changed_documents(
                 print(f"{logger_message}. {exc_info[0].__name__}: {exc_info[1]}")
                 if logger.level <= logging.INFO:
                     print_exception(*exc_info)
+                print("------")
             else:
                 print(logger_message)
+                print("------")
     print("=== SUMMARY ===")
     print(f"Processed: {n_processed}; Skipped: {n_skipped}; Failed: {n_failed}.")
     return (n_processed, n_skipped, n_failed)
