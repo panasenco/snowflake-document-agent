@@ -4,8 +4,10 @@ from hashlib import sha1
 import json
 import logging
 from logging import getLogger, Logger
+from operator import add
 import os
 from pathlib import Path
+from traceback import print_exception
 from typing import Any, Callable
 from urllib.parse import urlsplit, unquote_plus
 
@@ -23,6 +25,16 @@ ALL_TABLES = ["document_metadata", "document_text", "document_chunks"]
 CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "htm", "html", "txt"}
 
 
+class ErrorCaptureHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records: list[tuple[str, Any]] = []
+
+    def emit(self, record):
+        if record.levelno >= logging.ERROR:
+            self.records.append((record.msg, record.exc_info))
+
+
 def get_console_logger(verbosity: int) -> Logger:
     """Returns a logger object set to the provided level of verbosity (0 for warn, 1 for info, 2 for debug)."""
     LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
@@ -31,9 +43,10 @@ def get_console_logger(verbosity: int) -> Logger:
     console_handler.setLevel(logging_level)
     formatter = logging.Formatter("%(asctime)s - [%(levelname)s] %(message)s")
     console_handler.setFormatter(formatter)
-    logger = getLogger("snowdoc")
+    logger = getLogger("snowflake-document-agent")
     logger.setLevel(logging_level)
     logger.addHandler(console_handler)
+    logger.addHandler(ErrorCaptureHandler())
     return logger
 
 
@@ -319,8 +332,8 @@ def process_document(
     chunk_config_hash: str,
     update_display_name: bool = False,
     logger: Logger = getLogger(),
-) -> bool:
-    """Process a single document end-to-end. Returns True if a document change was processed, False otherwise."""
+) -> tuple[int, int, int]:
+    """Process a single document end-to-end. Returns a (processed, skipped, failed) count tuple."""
     name = f"{source_uri} ({display_name})"  # Convenient shorthand for document name
     processed = False
     local_path = downloader(source_uri)
@@ -380,15 +393,15 @@ def process_document(
                             stage_path=stage_path,
                         )
                 processed = True
-            except Exception as err:
-                logger.error(f"Error uploading or parsing {name} - removing version. {type(err).__name__}: {err}")
+            except Exception:
+                logger.exception(f"Error uploading or parsing {name} - removing version.")
                 delete_document(
                     cursor,
                     source_uri,
                     table_prefix=table_prefix,
                     source_uri_new=True,
                 )
-                return False
+                return (0, 0, 1)
         # Only recompute the metadata if the uri+config hash is not already present in the document_metadata table
         cursor.execute(
             f"""
@@ -412,8 +425,8 @@ def process_document(
                     **metadata_config,
                 )
                 processed = True
-            except Exception as err:
-                logger.error(f"Error generating metadata for {name} - removing version. {type(err).__name__}: {err}")
+            except Exception:
+                logger.exception(f"Error generating metadata for {name} - removing version.")
                 delete_document(
                     cursor,
                     source_uri,
@@ -421,7 +434,7 @@ def process_document(
                     source_uri_new=source_uri_new,
                     metadata_config_hash=metadata_config_hash if metadata_config_new else None,
                 )
-                return False
+                return (0, 0, 1)
         elif update_display_name and current_metadata_row[0] != display_name:
             # Update just the display name
             logger.info(f"Updating the display name of {source_uri}: {current_metadata_row[0]} -> {display_name}...")
@@ -429,6 +442,7 @@ def process_document(
                 f"update {table_prefix}document_metadata set display_name = :2 where source_uri = :1",
                 (source_uri, display_name),
             )
+            processed = True
         # Only recompute the chunks if the uri+config hash is not already present in the document_chunks table
         cursor.execute(
             f"""
@@ -450,8 +464,8 @@ def process_document(
                     **chunk_config,
                 )
                 processed = True
-            except Exception as err:
-                logger.error(f"Error generating chunks for {name} - removing version. {type(err).__name__}: {err}")
+            except Exception:
+                logger.exception(f"Error generating chunks for {name} - removing version.")
                 delete_document(
                     cursor,
                     source_uri,
@@ -460,7 +474,7 @@ def process_document(
                     metadata_config_hash=metadata_config_hash if metadata_config_new else None,
                     chunk_config_hash=chunk_config_hash if chunk_config_new else None,
                 )
-                return False
+                return (0, 0, 1)
         if processed:
             # Commit the changes
             logger.info(f"Processed {name} - Deleting previous versions of text/metadata/chunks")
@@ -484,7 +498,8 @@ def process_document(
                 },
                 table_prefix=table_prefix,
             )
-    return processed
+            return (1, 0, 0)
+    return (0, 1, 0)
 
 
 def clear_stage(configured_connection: SnowflakeConnection, /, *, table_prefix: str) -> None:
@@ -536,7 +551,7 @@ def process_changed_documents(
     # Ensure the Snowflake connection has the correct database/schema/warehouse
     configured_connection = configure_connection(connection, config)
     source_uris = set()
-    any_processed = False
+    n_processed, n_skipped, n_failed = 0, 0, 0
     process_sources = True
     all_sources_fetched = False
     clear_stage(configured_connection, table_prefix=table_prefix)
@@ -552,8 +567,8 @@ def process_changed_documents(
                     process_sources = False
                     logger.debug(f"All sources fetched. {len(source_uris)=}")
                     all_sources_fetched = True
-                except Exception as err:
-                    logger.error(f"Error fetching the next source in iterator - aborting. {type(err).__name__}: {err}")
+                except Exception:
+                    logger.exception("Error fetching the next source in iterator - aborting.")
                     process_sources = False
                 if process_sources:
                     logger.info(f"Submitting {source_uri} for processing...")
@@ -580,11 +595,12 @@ def process_changed_documents(
                     logger.debug(f"Future for {source_uri=} completed, deleting from future_uris and getting result.")
                     del future_uris[future]
                     try:
-                        any_processed = any_processed or future.result()
-                    except Exception as err:
-                        logger.error(
-                            f"Unexpected error processing {source_uri} - duplicates might be left in database. "
-                            f"{type(err).__name__}: {err}"
+                        result = future.result()
+                        n_processed, n_skipped, n_failed = tuple(map(add, (n_processed, n_skipped, n_failed), result))
+                    except Exception:
+                        n_failed += 1
+                        logger.exception(
+                            f"Unexpected error processing {source_uri} - duplicates might be left in database."
                         )
 
     # Delete the removed documents
@@ -606,9 +622,21 @@ def process_changed_documents(
                     table_prefix=table_prefix,
                 )
     # Make sure Cortex search services reflect the changes
-    if deleted_uris or any_processed:
+    if deleted_uris or n_processed > 0:
         logger.info("Finished processing documents - refreshing search services...")
         refresh_search_services(configured_connection, table_prefix=table_prefix)
         logger.info("Search services refreshed - all done!")
     else:
         logger.info("No documents processed or deleted.")
+    # Summarize
+    print("=== ERRORS ===")
+    error_capture_handler = [handler for handler in logger.handlers if isinstance(handler, ErrorCaptureHandler)][0]
+    for logger_message, exc_info in error_capture_handler.records:
+        if exc_info:
+            print(f"{logger_message}. {exc_info[0].__name__}: {exc_info[1]}")
+            if logger.level <= logging.INFO:
+                print_exception(*exc_info)
+        else:
+            print(logger_message)
+    print("=== SUMMARY ===")
+    print(f"Processed: {n_processed}; Skipped: {n_skipped}; Failed: {n_failed}.")

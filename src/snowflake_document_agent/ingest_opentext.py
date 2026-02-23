@@ -85,8 +85,8 @@ class OpenTextDownloader:
 
     @retry(
         retry=retry_if_exception(is_retriable_requests_error),
-        wait=wait_random_exponential(multiplier=1, max=60),
-        stop=stop_after_attempt(3),
+        wait=wait_random_exponential(multiplier=10, max=60),
+        stop=stop_after_attempt(4),
         reraise=True,
         before_sleep=before_sleep_log(logging.getLogger(), log_level=logging.INFO, exc_info=True),
     )
@@ -134,7 +134,9 @@ class OpenTextDownloader:
             try:
                 response = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
             except requests.exceptions.HTTPError as err:
-                self.logger.error(f"Failed to get node info for OpenText node {node_id}. {type(err).__name__}: {err}")
+                self.logger.exception(
+                    f"Failed to get node info for OpenText node {node_id}. {type(err).__name__}: {err}"
+                )
                 continue
             node_data = response.json()["data"]
             node_type = node_data["type_name"]
@@ -145,7 +147,7 @@ class OpenTextDownloader:
                     try:
                         children_response = self.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
                     except requests.exceptions.HTTPError as err:
-                        self.logger.error(
+                        self.logger.exception(
                             f"Failed to get children for OpenText node {name}. {type(err).__name__}: {err}"
                         )
                         continue
@@ -157,7 +159,7 @@ class OpenTextDownloader:
                     try:
                         version = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()
                     except requests.exceptions.HTTPError as err:
-                        self.logger.error(
+                        self.logger.exception(
                             f"Failed to get version info for OpenText node {name}. {type(err).__name__}: {err}"
                         )
                         continue
@@ -166,7 +168,7 @@ class OpenTextDownloader:
                     elif version["data"]["mime_type"]:
                         extension = guess_extension(version["data"]["mime_type"])
                     else:
-                        self.logger.error(f"Failed to determine extension for node {name}. {version=}")
+                        self.logger.exception(f"Failed to determine extension for node {name}. {version=}")
                         continue
                     # Create source URI with extension
                     source_uri = urlunsplit(
