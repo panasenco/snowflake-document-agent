@@ -196,12 +196,14 @@ class OpenTextDownloader:
                         yield original_uri, "/".join(parents + display_name_parts)
 
     def __call__(self, source_uri: str) -> Path:
-        """Downloads an OpenText document and returns its local path."""
+        """Downloads an OpenText document and returns its local path.
+        Note that the version (v=) param is ignored as only the current version's content can be downloaded.
+        """
         # The 'netloc' part of the URI is the OpenText node ID
         source_parts = urlsplit(source_uri)
         opentext_id = source_parts.netloc
         # The extension is stored in the query part of the URI
-        extension = parse_qs(source_parts.query)["extension"][0]
+        extension = parse_qs(source_parts.query)["ext"][0]
         # Call OpenText API to get content
         response = self.call("GET", f"opentext/cloud/v1/nodes/{opentext_id}/content")
         # Write content to temporary file with opentext_id prefix and correct extension
