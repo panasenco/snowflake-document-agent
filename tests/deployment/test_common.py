@@ -487,9 +487,8 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
     txt_file = tmp_path / "success.txt"
     txt_file.write_text("This is a test document for end-to-end processing.")
 
-    # 2. HTML file
-    html_file = tmp_path / "success.html"
-    html_file.write_text("<p>Test HTML document</p>")
+    # 2. HTML file (use fluff.html fixture with MS Word formatting)
+    html_file = Path(__file__).parent.parent / "fixtures" / "fluff.html"
 
     # 3. PDF fixture (should parse successfully)
     pdf_file = Path(__file__).parent.parent / "fixtures" / "cuad-sponsorship.pdf"
@@ -643,13 +642,24 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
         txt_result = cursor.fetchone()
         assert txt_result and "This is a test document for end-to-end processing." in txt_result[0]
 
-        # 2. HTML file content
+        # 2. HTML file content (cleaned from fluff.html)
         cursor.execute(
             "SELECT document_text FROM test_document_text WHERE source_uri LIKE :1",
             ("test://kitchen/success.html?timestamp=%",),
         )
         html_result = cursor.fetchone()
-        assert html_result and "<p>Test HTML document</p>" in html_result[0]
+        assert html_result is not None, "HTML result should exist"
+        html_content = html_result[0].lower()
+        # Check for cleaned content from fluff.html (MS Word fluff should be stripped)
+        assert "service operations overview" in html_content or "table of contents" in html_content, (
+            f"Expected cleaned HTML content, got: {html_result[0][:200]}..."
+        )
+        assert "important reminders" in html_content, (
+            f"Expected 'Important Reminders' in content: {html_result[0][:200]}..."
+        )
+        # Verify MS Word fluff was removed
+        assert "mso-" not in html_result[0], "MS Office styling should be stripped from HTML"
+        assert "WordSection" not in html_result[0], "Word-specific classes should be stripped from HTML"
 
         # 3. PDF file content
         cursor.execute(
@@ -675,7 +685,7 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
         xlsx_result = cursor.fetchone()
         assert xlsx_result and "reset table" in xlsx_result[0].lower()
 
-        # 6. Invalid UTF-8 HTML file content (should contain escaped bytes)
+        # 6. Invalid UTF-8 HTML file content (charset_normalizer handles encoding properly)
         cursor.execute(
             "SELECT document_text FROM test_document_text WHERE source_uri LIKE :1",
             ("test://kitchen/invalid_utf8.html?timestamp=%",),
@@ -683,9 +693,11 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
         invalid_utf8_result = cursor.fetchone()
         assert invalid_utf8_result is not None, "Invalid UTF-8 HTML file should have been processed"
         content = invalid_utf8_result[0]
-        # Should contain escaped bytes (backslash sequences) instead of crashing
-        assert "\\xff\\xfe" in content, f"Expected escaped bytes \\xff\\xfe in content, got: {content[:200]}..."
-        assert "html" in content.lower(), f"Expected HTML content to be readable, got: {content[:200]}..."
+        # charset_normalizer properly decodes the content instead of crashing
+        assert "invalid utf-8 content" in content.lower(), (
+            f"Expected 'Invalid UTF-8 content' text to be readable, got: {content[:200]}..."
+        )
+        assert len(content.strip()) > 0, "Content should not be empty"
 
         # Verify generated metadata contains file extension information (should now work with filename awareness)
         test_cases = [
