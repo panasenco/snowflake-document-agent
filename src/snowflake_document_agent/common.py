@@ -570,6 +570,7 @@ def process_document(
                 table_prefix=table_prefix,
             )
             return (1, 0, 0)
+    logger.debug(f"No changes detected in {name} - skipped processing...")
     return (0, 1, 0)
 
 
@@ -632,7 +633,9 @@ def process_changed_documents(
         while process_sources or len(future_uris) > 0:
             if process_sources and len(future_uris) < max_workers:
                 try:
-                    logger.debug(f"Getting next source. {process_sources=}, {len(future_uris)=}, {max_workers=}")
+                    logger.debug(
+                        f"Getting next source. {process_sources=}, {list(future_uris.values())=}, {max_workers=}"
+                    )
                     source_uri, display_name = next(sources_iterator)
                 except StopIteration:
                     process_sources = False
@@ -670,7 +673,7 @@ def process_changed_documents(
                         )
                         future_uris[future] = source_uri
             elif len(future_uris) > 0:
-                logger.debug(f"Waiting for next future. {len(future_uris)=}")
+                logger.debug(f"Waiting for next future. {list(future_uris.values())=}")
                 done, _ = wait(future_uris, return_when=FIRST_COMPLETED)
                 for future in done:
                     source_uri = future_uris[future]

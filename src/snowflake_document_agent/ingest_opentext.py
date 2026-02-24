@@ -13,14 +13,23 @@ from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_att
 
 from .common import parse_common_options, process_changed_documents
 
+# HTTP timeout configuration: (connection_timeout, read_timeout)
+REQUEST_TIMEOUT = (30, 300)  # 30s connection, 300s read for large files
+
 
 def is_retriable_requests_error(e: Exception) -> bool:
     """Determine if a requests error should be retried."""
-    if not isinstance(e, requests.exceptions.HTTPError):
-        return False
-    if e.response.status_code in [401, 404]:
-        return False
-    return True
+    # Retry timeout and connection errors
+    if isinstance(e, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return True
+
+    # Retry HTTP errors except client errors that won't succeed on retry
+    if isinstance(e, requests.exceptions.HTTPError):
+        if e.response.status_code in [401, 404]:
+            return False
+        return True
+
+    return False
 
 
 class OpenTextDownloader:
@@ -101,14 +110,13 @@ class OpenTextDownloader:
         """Make an API call to OpenText with optional custom headers and data."""
         api_url = f"{self.api_prefix}/{path}"
         request_headers = headers if headers is not None else self.headers
-
-        if method == "GET":
-            response = requests.get(api_url, headers=request_headers)
-        elif method == "POST":
-            response = requests.post(api_url, headers=request_headers, data=data)
-        else:
-            raise ValueError(f"Unsupported HTTP method: {method}")
-
+        response = requests.request(
+            method=method,
+            url=api_url,
+            headers=request_headers,
+            data=data,
+            timeout=REQUEST_TIMEOUT,
+        )
         response.raise_for_status()
         return response
 
