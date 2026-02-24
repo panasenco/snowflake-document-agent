@@ -360,7 +360,7 @@ def test_opentext_downloader_call_basic():
         assert mock_request.call_count == 2
 
 
-def test_opentext_downloader_call_invalid_uri_format():
+def test_opentext_downloader_call_uri_format():
     """Test that OpenTextDownloader.__call__ errors on invalid URI format."""
     with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         mock_auth_response = Mock()
@@ -384,22 +384,23 @@ def test_opentext_downloader_call_invalid_uri_format():
         with pytest.raises(KeyError):
             downloader("opentext://12345?v=1")
 
-        # Should succeed for URI with empty netloc (but creates invalid API path)
-        # This exposes that the implementation doesn't validate netloc properly
-        result = downloader("opentext://?ext=.pdf&v=1")
-        assert isinstance(result, Path)
-        # Should have made a call with empty node ID
-        downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes//content")
+        # Should error for blank node id
+        with pytest.raises(ValueError):
+            downloader("opentext://?ext=.pdf")
 
-        # Reset mock for next test
+        # Should error for non-numeric node id
+        with pytest.raises(ValueError):
+            downloader("opentext://path/to/file?ext=.pdf")
+
+        path = downloader("opentext://12345?ext=.pdf")
+        downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes/12345/content")
+        assert path.suffix == ".pdf"
+
         downloader.call.reset_mock()
 
-        # Should succeed for URI without netloc (path-based)
-        # This also exposes that netloc validation is missing
-        result = downloader("opentext:///path/to/file.pdf?ext=.pdf&v=1")
-        assert isinstance(result, Path)
-        # Should have made a call with empty node ID (netloc is empty when path is used)
-        downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes//content")
+        path = downloader("https://opentext.example.com/my/api/path/6789?ext=.docx")
+        downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes/6789/content")
+        assert path.suffix == ".docx"
 
 
 def test_opentext_downloader_initialization():

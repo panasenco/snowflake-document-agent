@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
@@ -124,7 +124,7 @@ class OpenTextDownloader:
         self,
         opentext_nodes: list[int],
         *,
-        prefix: str = "opentext",
+        prefix: str = "opentext://",
         parents: list[str] = [],
         suppress_errors: bool = True,
     ) -> Iterator[tuple[str, str]]:
@@ -132,7 +132,7 @@ class OpenTextDownloader:
 
         Args:
             opentext_nodes: List of OpenText node IDs to process
-            prefix: URI prefix (scheme) for the generated URIs
+            prefix: URL prefix for the generated URIs
             parents: List of parent folders to construct a display_name containing all the parent folders
 
         Returns:
@@ -168,7 +168,7 @@ class OpenTextDownloader:
                     child_ids = [child["data"]["properties"]["id"] for child in children_data]
                     # Recursively process children
                     yield from self.get_opentext_documents(
-                        child_ids, parents=[*parents, node_data["name"]], suppress_errors=suppress_errors
+                        child_ids, parents=[*parents, node_data["name"]], prefix=prefix, suppress_errors=suppress_errors
                     )
                 case "Document":
                     try:
@@ -192,14 +192,8 @@ class OpenTextDownloader:
                         else:
                             raise
                     # Create source URI with extension
-                    source_uri = urlunsplit(
-                        (
-                            prefix,
-                            str(node_id),
-                            "",
-                            urlencode({"v": version["data"]["version_number"], "ext": extension}),
-                            "",
-                        )
+                    source_uri = f"{prefix}{node_id}?" + urlencode(
+                        {"v": version["data"]["version_number"], "ext": extension}
                     )
                     yield source_uri, "/".join([*parents, f"{node_data['name']}{extension}"])
                 case "Shortcut":
@@ -208,7 +202,7 @@ class OpenTextDownloader:
                     try:
                         # Update the display name of linked document(s) with shortcut name instead of original name
                         for original_uri, original_display_name in self.get_opentext_documents(
-                            [original_id], suppress_errors=False
+                            [original_id], prefix=prefix, suppress_errors=False
                         ):
                             # Replace the first part of the original display name with the shortcut name
                             # If linked to a document, this will replace the full document name
@@ -233,11 +227,14 @@ class OpenTextDownloader:
         """Downloads an OpenText document and returns its local path.
         Note that the version (v=) param is ignored as only the current version's content can be downloaded.
         """
-        # The 'netloc' part of the URI is the OpenText node ID
-        source_parts = urlsplit(source_uri)
-        opentext_id = source_parts.netloc
+        # The OpenText node ID is between the question mark and the preceding slash
+        opentext_id = source_uri.split("?")[0].split("/")[-1]
+        if not opentext_id:
+            raise ValueError(f"Could not extract OpenText node id from {source_uri=}")
+        if not opentext_id.isnumeric():
+            raise ValueError(f"OpenText node id {opentext_id} extracted from {source_uri=} is not numeric")
         # The extension is stored in the query part of the URI
-        extension = parse_qs(source_parts.query)["ext"][0]
+        extension = parse_qs(urlsplit(source_uri).query)["ext"][0]
         # Call OpenText API to get content
         response = self.call("GET", f"opentext/cloud/v1/nodes/{opentext_id}/content")
         # Write content to temporary file with opentext_id prefix and correct extension
@@ -253,7 +250,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest OpenText documents into Snowflake.")
     parser.add_argument("node_ids", nargs="+", type=int, help="OpenText node IDs to process")
     parser.add_argument(
-        "-p", "--prefix", default="opentext", help="URI scheme prefix for the documents (default: opentext)"
+        "-p", "--prefix", default="opentext://", help="URL prefix for the documents (default: opentext://)"
     )
     args, process_changed_documents_params, logger = parse_common_options(parser)
 
@@ -262,7 +259,7 @@ def main() -> None:
     process_changed_documents(
         opentext_downloader.get_opentext_documents(args.node_ids, prefix=args.prefix),
         downloader=opentext_downloader,
-        prefix=f"{args.prefix}://",
+        prefix=f"{args.prefix}",
         **process_changed_documents_params,
     )
 
