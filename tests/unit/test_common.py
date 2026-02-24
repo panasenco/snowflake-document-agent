@@ -1,8 +1,15 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 
-from snowflake_document_agent.common import docx_to_html, excel_to_html, doc_to_text, process_changed_documents
+from snowflake_document_agent.common import (
+    docx_to_html,
+    excel_to_html,
+    doc_to_text,
+    html_to_text,
+    process_changed_documents,
+)
 
 
 def test_docx_to_html_basic():
@@ -90,6 +97,58 @@ def test_doc_to_text_basic():
     assert "data" in text_lower, "Expected 'data' content from table in word97.doc fixture"
 
     print(f"Successfully converted DOC to {len(text_content)} characters of text")
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "fluff.html",
+        "fluff-utf16.html",
+    ],
+    ids=["utf8", "utf16"],
+)
+def test_html_to_text_basic(fixture_name):
+    """
+    Test that html_to_text extracts meaningful content from HTML with MS Word fluff.
+    Uses inscriptis to strip out styling, metadata, and other non-content elements.
+    Tests both UTF-8 and UTF-16 encoded files.
+    """
+    # Use the fixture file with lots of Microsoft Word HTML fluff
+    fixture_html = Path(__file__).parent.parent / "fixtures" / fixture_name
+    assert fixture_html.exists(), f"Fixture file not found: {fixture_html}"
+
+    # Execute - Extract clean content from fluff HTML
+    clean_content = html_to_text(fixture_html)
+
+    # Verify - Should return cleaned text content
+    assert clean_content is not None, "html_to_text returned None"
+    assert isinstance(clean_content, str), f"Expected string, got {type(clean_content)}"
+    assert len(clean_content.strip()) > 0, "Extracted content is empty"
+
+    # Check that meaningful content is preserved
+    content_lower = clean_content.lower()
+    assert "service operations overview" in content_lower or "overview" in content_lower, (
+        "Expected document title in extracted content"
+    )
+    assert "table of contents" in content_lower, "Expected 'Table of Contents' in extracted content"
+    assert "account setup" in content_lower or "appointments" in content_lower, (
+        "Expected section headers in extracted content"
+    )
+
+    # Check that Microsoft Word fluff is removed
+    assert "mso-" not in clean_content, "MS Office styling (mso-) should be stripped"
+    assert "xmlns:" not in clean_content, "XML namespaces should be stripped"
+    assert "<!--[if" not in clean_content, "Conditional comments should be stripped"
+    assert "WordSection" not in clean_content, "Word-specific classes should be stripped"
+
+    # The cleaned content should be significantly shorter than the original
+    original_size = fixture_html.stat().st_size
+    cleaned_size = len(clean_content)
+    assert cleaned_size < original_size * 0.5, (
+        f"Expected cleaned content to be much smaller (got {cleaned_size} bytes from {original_size} bytes)"
+    )
+
+    print(f"Successfully extracted {len(clean_content)} characters of clean content from HTML fluff ({fixture_name})")
 
 
 def test_process_changed_documents_handles_none_sentinel():
