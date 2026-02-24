@@ -236,12 +236,20 @@ def parse_document(
     cursor.execute(
         f"""
         insert into {table_prefix}document_text (source_uri, document_text)
+        with parsed_document as (
+            select
+                ai_parse_document(
+                    to_file('@{table_prefix}documents', :2),
+                    {{'mode': 'OCR'}}
+                )::string as parsed_text
+        )
         select
             :1 as source_uri,
-            ai_parse_document(
-                to_file('@{table_prefix}documents', :2),
-                {{'mode': 'OCR'}}
-            )::string as document_text
+            case
+                when startswith(parsed_text, '{{"content":"') then json_extract_path_text(parsed_text, 'content')
+                else parsed_text
+            end as document_text
+        from parsed_document
         """,
         (source_uri, stage_path),
     )
