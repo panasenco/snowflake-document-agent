@@ -3,7 +3,7 @@ use role <% ctx.env.role %>;
 use schema <% ctx.env.database %>.<% ctx.env.schema %>;
 
 -- Metadata search
-create or replace cortex search service <% ctx.env.agent_name %>_search_metadata
+create cortex search service if not exists <% ctx.env.agent_name %>_search_metadata
     on generated_metadata
     warehouse = <% ctx.env.warehouse %>
     target_lag = '1 day'
@@ -14,7 +14,7 @@ create or replace cortex search service <% ctx.env.agent_name %>_search_metadata
 alter cortex search service <% ctx.env.agent_name %>_search_metadata suspend indexing;
 
 -- Content search
-create or replace cortex search service <% ctx.env.agent_name %>_search_contents
+create cortex search service if not exists <% ctx.env.agent_name %>_search_contents
     on contextualized_chunk
     warehouse = <% ctx.env.warehouse %>
     target_lag = '1 day'
@@ -34,7 +34,7 @@ create or replace cortex search service <% ctx.env.agent_name %>_search_contents
 alter cortex search service <% ctx.env.agent_name %>_search_contents suspend indexing;
 
 -- Agent
-create or replace agent <% ctx.env.agent_name %>
+create or replace agent snowflake_intelligence.agents.<% ctx.env.agent_name %>
   comment = '<% ctx.env.agent_description %>'
   profile = '{"avatar":  "<% ctx.env.agent_icon %>", "color": "<% ctx.env.agent_color %>"}'
   from specification
