@@ -987,7 +987,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     # Since documents already exist from previous phases, they should be skipped
     assert phase3_processed == 0, f"Expected 0 processed (docs already exist), got {phase3_processed}"
     assert phase3_skipped == 2, f"Expected 2 skipped (first 2 sources before iterator fails), got {phase3_skipped}"
-    assert phase3_failed == 0, f"Expected 0 failed (iterator failure doesn't count as doc failure), got {phase3_failed}"
+    assert phase3_failed == 1, f"Expected 1 failed (iterator failure should count as failure), got {phase3_failed}"
 
     # === VERIFY PHASE 3 RESULTS ===
     post_broken_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")

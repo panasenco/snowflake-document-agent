@@ -639,10 +639,14 @@ def process_changed_documents(
                     logger.debug(f"All sources fetched. {len(source_uris)=}")
                     all_sources_fetched = True
                 except Exception:
-                    logger.exception("Error fetching the next source in iterator - aborting.")
+                    logger.exception("Unexpected error fetching the next source in the sources iterator - aborting.")
+                    n_failed += 1
                     process_sources = False
                 if process_sources:
-                    if source_uri in source_uris:
+                    if source_uri is None:
+                        logger.info("Failed to process a source, incrementing the failed counter")
+                        n_failed += 1
+                    elif source_uri in source_uris:
                         logger.warning(
                             f"The URI of source {source_uri} ({display_name}) was already encountered - skipping!"
                         )

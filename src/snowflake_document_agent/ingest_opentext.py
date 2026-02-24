@@ -118,6 +118,7 @@ class OpenTextDownloader:
         *,
         prefix: str = "opentext",
         parents: list[str] = [],
+        suppress_errors: bool = True,
     ) -> Iterator[tuple[str, str]]:
         """Discover OpenText documents from specified node IDs.
 
@@ -133,43 +134,55 @@ class OpenTextDownloader:
             # Get node info from OpenText API
             try:
                 response = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}")
-            except requests.exceptions.HTTPError as err:
-                self.logger.exception(
-                    f"Failed to get node info for OpenText node {node_id}. {type(err).__name__}: {err}"
-                )
-                continue
+            except requests.exceptions.HTTPError:
+                if suppress_errors:
+                    self.logger.exception(f"Failed to get node info for OpenText node {node_id} ({parents=})")
+                    yield None, None
+                    continue
+                else:
+                    raise
             node_data = response.json()["data"]
             node_type = node_data["type_name"]
-            name = f"{node_id} ({node_data['name']})"  # Node name for logging
+            name = f"{node_id} ({'/'.join(parents)}/{node_data['name']})"  # Node name for logging
             match node_type:
                 case "Folder":
                     # Get child IDs
                     try:
                         children_response = self.call("GET", f"opentext/cloud/v2/nodes/{node_id}/nodes?limit=1000")
-                    except requests.exceptions.HTTPError as err:
-                        self.logger.exception(
-                            f"Failed to get children for OpenText node {name}. {type(err).__name__}: {err}"
-                        )
-                        continue
+                    except requests.exceptions.HTTPError:
+                        if suppress_errors:
+                            self.logger.exception(f"Failed to get children for OpenText node {name}")
+                            yield None, None
+                            continue
+                        else:
+                            raise
                     children_data = children_response.json()["results"]
                     child_ids = [child["data"]["properties"]["id"] for child in children_data]
                     # Recursively process children
-                    yield from self.get_opentext_documents(child_ids, parents=[*parents, node_data["name"]])
+                    yield from self.get_opentext_documents(
+                        child_ids, parents=[*parents, node_data["name"]], suppress_errors=suppress_errors
+                    )
                 case "Document":
                     try:
                         version = self.call("GET", f"opentext/cloud/v1/nodes/{node_id}/versions/0").json()
-                    except requests.exceptions.HTTPError as err:
-                        self.logger.exception(
-                            f"Failed to get version info for OpenText node {name}. {type(err).__name__}: {err}"
-                        )
-                        continue
+                    except requests.exceptions.HTTPError:
+                        if suppress_errors:
+                            self.logger.exception(f"Failed to get version info for OpenText node {name}")
+                            yield None, None
+                            continue
+                        else:
+                            raise
                     if version["data"]["file_type"]:
                         extension = "." + version["data"]["file_type"].lower()
                     elif version["data"]["mime_type"]:
                         extension = guess_extension(version["data"]["mime_type"])
                     else:
-                        self.logger.exception(f"Failed to determine extension for node {name}. {version=}")
-                        continue
+                        if suppress_errors:
+                            self.logger.exception(f"Failed to determine extension for node {name}. {version=}")
+                            yield None, None
+                            continue
+                        else:
+                            raise
                     # Create source URI with extension
                     source_uri = urlunsplit(
                         (
@@ -184,19 +197,29 @@ class OpenTextDownloader:
                 case "Shortcut":
                     # Handle shortcut - follow original_id but preserve shortcut name
                     original_id = node_data["original_id"]
-                    # Update the display name of linked document(s) with shortcut name instead of original name
-                    for original_uri, original_display_name in self.get_opentext_documents([original_id]):
-                        # Replace the first part of the original display name with the shortcut name
-                        # If linked to a document, this will replace the full document name
-                        # If linked to a folder, this will replace the top folder name
-                        display_name_parts = original_display_name.split("/")
-                        if "." in display_name_parts[0]:
-                            # Preserve the extension from the original display name
-                            display_name_parts[0] = node_data["name"] + "." + display_name_parts[0].split(".", 1)[1]
+                    try:
+                        # Update the display name of linked document(s) with shortcut name instead of original name
+                        for original_uri, original_display_name in self.get_opentext_documents(
+                            [original_id], suppress_errors=False
+                        ):
+                            # Replace the first part of the original display name with the shortcut name
+                            # If linked to a document, this will replace the full document name
+                            # If linked to a folder, this will replace the top folder name
+                            display_name_parts = original_display_name.split("/")
+                            if "." in display_name_parts[0]:
+                                # Preserve the extension from the original display name
+                                display_name_parts[0] = node_data["name"] + "." + display_name_parts[0].split(".", 1)[1]
+                            else:
+                                display_name_parts[0] = node_data["name"]
+                            # Save the new display name
+                            yield original_uri, "/".join(parents + display_name_parts)
+                    except Exception:
+                        if suppress_errors:
+                            self.logger.exception(f"Failed to dereference shortcut {name}")
+                            yield None, None
+                            continue
                         else:
-                            display_name_parts[0] = node_data["name"]
-                        # Save the new display name
-                        yield original_uri, "/".join(parents + display_name_parts)
+                            raise
 
     def __call__(self, source_uri: str) -> Path:
         """Downloads an OpenText document and returns its local path.
