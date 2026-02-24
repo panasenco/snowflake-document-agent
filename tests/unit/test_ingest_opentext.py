@@ -307,9 +307,18 @@ def test_get_opentext_documents_handles_http_errors():
         "Should have version 401 error"
     )
 
-    # Should continue processing and return results only from the successful node (300)
-    assert len(docs) == 1
-    source_uri, display_name = docs[0]
+    # Should continue processing and return (None, None) sentinels for errors plus successful node (300)
+    assert len(docs) == 7, f"Expected 7 results (6 error sentinels + 1 success), got {len(docs)}"
+
+    # Count error sentinels and get successful documents
+    error_sentinel_count = sum(1 for uri, name in docs if uri is None and name is None)
+    successful_docs = [(uri, name) for uri, name in docs if uri is not None and name is not None]
+
+    assert error_sentinel_count == 6, f"Expected 6 error sentinels, got {error_sentinel_count}"
+    assert len(successful_docs) == 1, f"Expected 1 successful document, got {len(successful_docs)}"
+
+    # Verify the successful document
+    source_uri, display_name = successful_docs[0]
     assert source_uri.startswith("opentext://300")
     assert "v=1" in source_uri
     assert "ext=.txt" in source_uri

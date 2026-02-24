@@ -1,6 +1,8 @@
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from snowflake_document_agent.common import docx_to_html, excel_to_html, doc_to_text
+
+from snowflake_document_agent.common import docx_to_html, excel_to_html, doc_to_text, process_changed_documents
 
 
 def test_docx_to_html_basic():
@@ -88,3 +90,62 @@ def test_doc_to_text_basic():
     assert "data" in text_lower, "Expected 'data' content from table in word97.doc fixture"
 
     print(f"Successfully converted DOC to {len(text_content)} characters of text")
+
+
+def test_process_changed_documents_handles_none_sentinel():
+    """
+    Test that process_changed_documents properly handles (None, None) sentinel values from generators.
+    When a generator yields (None, None) to signal an error (instead of raising an exception),
+    the failed counter should be incremented.
+    """
+
+    def error_yielding_generator():
+        """Generator that yields some valid documents and then (None, None) to signal errors"""
+        # First yield a successful document
+        yield ("test://unit/success.txt", "Success Document")
+        # Then yield (None, None) to signal an error occurred
+        yield (None, None)
+        # Then yield another successful document
+        yield ("test://unit/success2.txt", "Success Document 2")
+        # And another error sentinel
+        yield (None, None)
+
+    def mock_downloader(source_uri: str) -> Path:
+        """Mock downloader that returns fake paths"""
+        return Path("/fake/path") / source_uri.split("/")[-1]
+
+    # Mock all the Snowflake operations
+    mock_connection = MagicMock()
+    mock_cursor = MagicMock()
+    mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+
+    # Mock the supporting functions that interact with Snowflake
+    with (
+        patch("snowflake_document_agent.common.configure_connection", return_value=mock_connection),
+        patch("snowflake_document_agent.common.clear_stage"),
+        patch("snowflake_document_agent.common.process_document", return_value=(1, 0, 0)),
+        patch("snowflake_document_agent.common.refresh_search_services"),
+    ):
+        # Execute - Process the generator that includes error sentinels
+        processed, skipped, failed = process_changed_documents(
+            error_yielding_generator(),
+            connection=mock_connection,
+            downloader=mock_downloader,
+            prefix="test://unit/",
+            config={
+                "agent_name": "test",
+                "metadata_model": "test",
+                "metadata_prompt": "test",
+                "metadata_first_chars": 100,
+                "chunk_size": 1000,
+                "chunk_overlap": 100,
+            },
+            max_workers=1,
+        )
+
+    # Verify - Should have processed 2 successful docs and failed on 2 error sentinels
+    assert processed == 2, f"Expected 2 processed documents, got {processed}"
+    assert skipped == 0, f"Expected 0 skipped documents, got {skipped}"
+    assert failed == 2, f"Expected 2 failed (from None sentinels), got {failed}"
+
+    print("✅ Unit test passed - (None, None) yields should increment failed counter!")
