@@ -5,6 +5,7 @@ description = "Python ELT processes to incrementally load document files into Sn
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "inscriptis>=2.7.0",
     "mammoth>=1.11.0",
     "openpyxl>=3.1.5",
     "pandas>=3.0.0",

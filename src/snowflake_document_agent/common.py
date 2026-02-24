@@ -8,11 +8,14 @@ from logging import getLogger, Logger
 from operator import add
 import os
 from pathlib import Path
+import re
 import subprocess
 from traceback import print_exception
 from typing import Any, Callable
 from urllib.parse import urlsplit, unquote_plus
 
+from charset_normalizer import from_path
+import inscriptis
 import mammoth
 import pandas as pd
 import snowflake.connector
@@ -184,6 +187,22 @@ def excel_to_html(local_path: Path) -> str:
         html_content += sheet_html + "\n"
 
     return html_content
+
+
+def html_to_text(local_path: Path) -> str:
+    """Cleans the contents of an HTML file and extracts just the meaningful content HTML.
+    Automatically detects encoding (handles UTF-8, UTF-16, etc.)."""
+    # Detect encoding automatically
+    detected = from_path(local_path).best()
+    if detected is None:
+        raise RuntimeError(f"Could not detect best encoding for {local_path}")
+
+    html_content = str(detected)
+    inscriptis_config = inscriptis.model.config.ParserConfig(table_cell_separator="|")
+    text = inscriptis.get_text(html_content, inscriptis_config)
+
+    # Strip excessive whitespace
+    return re.sub(r" {2,}", " ", text)
 
 
 def set_document_text(
@@ -408,14 +427,23 @@ def process_document(
             try:
                 document_type = local_path.suffix.removeprefix(".").lower()
                 match document_type:
-                    case "htm" | "html" | "txt":
+                    case "txt":
                         # Upload the contents directly
                         logger.info(f"Uploading contents of {name} directly...")
                         set_document_text(
                             cursor,
                             table_prefix=table_prefix,
                             source_uri=source_uri,
-                            text=local_path.read_text(encoding="utf-8", errors="backslashreplace"),
+                            text=str(from_path(local_path).best()),
+                        )
+                    case "htm" | "html":
+                        # The HTML files are often Word exports with a bunch of fluff, so extract just the text
+                        logger.info(f"Cleaning and uploading contents of {name}...")
+                        set_document_text(
+                            cursor,
+                            table_prefix=table_prefix,
+                            source_uri=source_uri,
+                            text=html_to_text(local_path),
                         )
                     case "xls" | "xlsx" | "xlsm":
                         # Convert Excel to HTML
