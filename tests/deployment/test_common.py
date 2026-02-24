@@ -199,6 +199,15 @@ def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
         assert len(parsed_text.strip()) > 50, (
             f"Parsed content too short, got {len(parsed_text)} chars: {parsed_text[:100]}..."
         )
+
+        # Verify content is plain text, not JSON structure
+        assert not parsed_text.strip().startswith('{"content":"'), (
+            f"Parsed content should be extracted plain text, not JSON. Got: {parsed_text[:100]}..."
+        )
+        assert not parsed_text.strip().startswith("{"), (
+            f"Parsed content should not start with JSON object. Got: {parsed_text[:100]}..."
+        )
+
         assert "undergo training" in parsed_text.lower(), "Expected 'undergo training' in cuad-sponsorship.pdf content"
 
         print(f"Successfully parsed {len(parsed_text)} characters from PDF")
