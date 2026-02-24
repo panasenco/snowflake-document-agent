@@ -127,6 +127,9 @@ uploaded to Snowflake:
 ingest-local --snowflake-connection default --verbose 12345678
 ```
 
+### Ingestion notes
+- You'll need the program `antiword` installed to process .doc (Word 1997-2003) files.
+
 ## Using the agent
 
 After an ingestion, your agent is ready to use!
