@@ -8,6 +8,7 @@ from logging import getLogger, Logger
 from operator import add
 import os
 from pathlib import Path
+import subprocess
 from traceback import print_exception
 from typing import Any, Callable
 from urllib.parse import urlsplit, unquote_plus
@@ -144,6 +145,24 @@ def stage_document(
         f"put 'file://{local_path_str}' '@{table_prefix}documents/{stage_parent_sanitized}' auto_compress=false overwrite=true",
     )
     return (stage_parent + "/" + local_path.name) if stage_parent else local_path.name
+
+
+def doc_to_text(doc_path: Path) -> str:
+    """Parse a .doc file to text using antiword.
+    Accepts the path to the .doc (Word 1997-2003) file.
+    Returns extracted text content
+    """
+    result = subprocess.run(["antiword", "-f", str(doc_path)], capture_output=True, text=True, timeout=30)
+
+    if result.returncode != 0:
+        error_msg = f"antiword failed with return code {result.returncode}"
+        if result.stderr:
+            error_msg += f"\nstderr: {result.stderr}\n"
+        if result.stdout:
+            error_msg += f"\nstdout: {result.stdout}"
+        raise RuntimeError(error_msg)
+
+    return result.stdout
 
 
 def docx_to_html(local_path: Path) -> str:
@@ -409,9 +428,20 @@ def process_document(
                             source_uri=source_uri,
                             text=document_html,
                         )
+                    case "doc":
+                        # Convert doc format (Word 1997) to text
+                        logger.info(f"Converting doc (Word 1997) document {name} to text...")
+                        document_text = doc_to_text(local_path)
+                        logger.info(f"Uploading converted text contents of {name} directly...")
+                        set_document_text(
+                            cursor,
+                            table_prefix=table_prefix,
+                            source_uri=source_uri,
+                            text=document_text,
+                        )
                     case "docx":
-                        # Convert Word docx to HTML
-                        logger.info(f"Converting Word document {name} to HTML...")
+                        # Convert docx format (Word 2007 onward) to HTML
+                        logger.info(f"Converting docx document {name} to HTML...")
                         document_html = docx_to_html(local_path)
                         logger.info(f"Uploading converted HTML contents of {name} directly...")
                         set_document_text(

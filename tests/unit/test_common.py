@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from snowflake_document_agent.common import docx_to_html, excel_to_html
+from snowflake_document_agent.common import docx_to_html, excel_to_html, doc_to_text
 
 
 def test_docx_to_html_basic():
@@ -59,3 +59,32 @@ def test_excel_to_html_basic():
     assert table_count >= 2, f"Expected at least 2 tables for multi-worksheet, got {table_count}"
 
     print(f"Successfully converted XLSX to {len(html_content)} characters of HTML with {table_count} tables")
+
+
+def test_doc_to_text_basic():
+    """
+    Test that doc_to_text converts a .doc file to text format using antiword.
+    """
+    # Use the fixture file
+    fixture_doc = Path(__file__).parent.parent / "fixtures" / "word97.doc"
+    assert fixture_doc.exists(), f"Fixture file not found: {fixture_doc}"
+
+    # Execute - Convert DOC to text
+    text_content = doc_to_text(fixture_doc)
+
+    # Verify - Should return text content
+    assert text_content is not None, "doc_to_text returned None"
+    assert isinstance(text_content, str), f"Expected string, got {type(text_content)}"
+    assert len(text_content.strip()) > 0, "Text content is empty"
+
+    # Check for expected content from the word97.doc fixture
+    text_lower = text_content.lower()
+    assert "heading!" in text_lower, "Expected 'Heading!' content in word97.doc fixture"
+    assert "body" in text_lower, "Expected 'Body' content in word97.doc fixture"
+
+    # Check for table content that should be extracted
+    assert "table!" in text_lower, "Expected 'Table!' content from table in word97.doc fixture"
+    assert "tabular" in text_lower, "Expected 'Tabular' content from table in word97.doc fixture"
+    assert "data" in text_lower, "Expected 'data' content from table in word97.doc fixture"
+
+    print(f"Successfully converted DOC to {len(text_content)} characters of text")
