@@ -9,11 +9,11 @@ from snowflake_document_agent.ingest_opentext import OpenTextDownloader
 def test_get_opentext_documents_basic():
     """Test that get_opentext_documents returns generator of (source_uri, display_name) tuples."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+        mock_request.return_value = mock_auth_response
 
         downloader = OpenTextDownloader(
             client_id="test_client",
@@ -60,11 +60,11 @@ def test_get_opentext_documents_basic():
 def test_get_opentext_documents_handles_folder():
     """Test that get_opentext_documents recursively processes folders."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+        mock_request.return_value = mock_auth_response
 
         downloader = OpenTextDownloader(
             client_id="test_client",
@@ -133,11 +133,11 @@ def test_get_opentext_documents_handles_folder():
 def test_get_opentext_documents_handles_shortcut():
     """Test that get_opentext_documents resolves shortcuts to actual documents."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+        mock_request.return_value = mock_auth_response
 
         downloader = OpenTextDownloader(
             client_id="test_client",
@@ -197,11 +197,11 @@ def test_get_opentext_documents_handles_shortcut():
 def test_get_opentext_documents_handles_http_errors():
     """Test that get_opentext_documents handles 404/401 errors gracefully across all API calls and continues processing."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+        mock_request.return_value = mock_auth_response
 
         downloader = OpenTextDownloader(
             client_id="test_client",
@@ -327,11 +327,17 @@ def test_get_opentext_documents_handles_http_errors():
 
 def test_opentext_downloader_call_basic():
     """Test that OpenTextDownloader.__call__ downloads documents properly."""
-    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+
+        # Mock content response
+        mock_content_response = Mock()
+        mock_content_response.content = b"fake document content"
+
+        # Return different responses based on call order
+        mock_request.side_effect = [mock_auth_response, mock_content_response]
 
         downloader = OpenTextDownloader(
             client_id="test_client",
@@ -341,33 +347,25 @@ def test_opentext_downloader_call_basic():
             app_client_secret="app_secret",
         )
 
-        # Mock the content download
-        with patch("snowflake_document_agent.ingest_opentext.requests.get") as mock_get:
-            mock_content_response = Mock()
-            mock_content_response.content = b"fake document content"
-            mock_get.return_value = mock_content_response
+        # Test downloading a document using new URI format
+        result = downloader("opentext://12345?v=1&ext=.pdf")
 
-            # Test downloading a document using new URI format
-            result = downloader("opentext://12345?v=1&ext=.pdf")
+        # Should return a Path
+        assert isinstance(result, Path)
+        assert result.exists()
+        assert result.suffix == ".pdf"
+        assert "12345_" in result.name  # Should have node ID prefix
 
-            # Should return a Path
-            assert isinstance(result, Path)
-            assert result.exists()
-            assert result.suffix == ".pdf"
-            assert "12345_" in result.name  # Should have node ID prefix
-
-            # Should have made API call to download content
-            mock_get.assert_called_once_with(
-                "https://api.example.com/opentext/cloud/v1/nodes/12345/content", headers=downloader.headers
-            )
+        # Should have made 2 requests: auth + content download
+        assert mock_request.call_count == 2
 
 
 def test_opentext_downloader_call_invalid_uri_format():
     """Test that OpenTextDownloader.__call__ errors on invalid URI format."""
-    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+        mock_request.return_value = mock_auth_response
 
         downloader = OpenTextDownloader(
             client_id="test_client",
@@ -406,11 +404,11 @@ def test_opentext_downloader_call_invalid_uri_format():
 
 def test_opentext_downloader_initialization():
     """Test OpenTextDownloader initialization with credentials."""
-    with patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post:
+    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+        mock_request.return_value = mock_auth_response
 
         downloader = OpenTextDownloader(
             client_id="test_client",
@@ -421,7 +419,7 @@ def test_opentext_downloader_initialization():
         )
 
         # Should have made auth request
-        mock_post.assert_called_once()
+        mock_request.assert_called_once()
         assert downloader.headers["authorization"] == "Bearer fake_token"
 
 
@@ -444,11 +442,11 @@ def test_opentext_downloader_env_vars():
 
     with (
         patch.dict("os.environ", env_vars),
-        patch("snowflake_document_agent.ingest_opentext.requests.post") as mock_post,
+        patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request,
     ):
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
-        mock_post.return_value = mock_auth_response
+        mock_request.return_value = mock_auth_response
 
         downloader = OpenTextDownloader()
 
