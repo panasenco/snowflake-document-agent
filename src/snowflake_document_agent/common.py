@@ -15,7 +15,8 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, unquote_plus
 
 from charset_normalizer import from_path
-import inscriptis
+import lxml.html
+import lxml.html.clean
 import mammoth
 import pandas as pd
 import snowflake.connector
@@ -189,20 +190,61 @@ def excel_to_html(local_path: Path) -> str:
     return html_content
 
 
-def html_to_text(local_path: Path) -> str:
+def clean_html(local_path: Path) -> str:
     """Cleans the contents of an HTML file and extracts just the meaningful content HTML.
     Automatically detects encoding (handles UTF-8, UTF-16, etc.)."""
     # Detect encoding automatically
     detected = from_path(local_path).best()
     if detected is None:
         raise RuntimeError(f"Could not detect best encoding for {local_path}")
-
     html_content = str(detected)
-    inscriptis_config = inscriptis.model.config.ParserConfig(table_cell_separator="|")
-    text = inscriptis.get_text(html_content, inscriptis_config)
 
-    # Strip excessive whitespace
-    return re.sub(r" {2,}", " ", text)
+    html_doc = lxml.html.fromstring(html_content)
+    html_cleaner = lxml.html.clean.Cleaner(
+        scripts=True,
+        javascript=True,
+        comments=True,
+        style=True,
+        inline_style=True,
+        links=True,
+        meta=True,
+        page_structure=True,
+        processing_instructions=True,
+        embedded=True,
+        frames=True,
+        forms=True,
+        annoying_tags=True,
+        remove_tags=["a", "span"],
+        kill_tags=["img", "script", "style"],
+        safe_attrs_only=True,
+        safe_attrs=["colspan", "rowspan", "headers", "scope"],
+    )
+    cleaned_doc = html_cleaner.clean_html(html_doc)
+
+    # Remove empty tags (e.g., <b></b>, <p></p>, <p> </p>)
+    # Collect elements to remove first to avoid iterator issues
+    while True:
+        empty_elements = []
+        for element in cleaned_doc.iter():
+            # Check if element is empty or contains only whitespace
+            has_text = element.text is not None and element.text.strip()
+            has_tail = element.tail is not None and element.tail.strip()
+            has_children = len(element) > 0
+            if not has_text and not has_tail and not has_children:
+                empty_elements.append(element)
+        if not empty_elements:
+            break  # No more empty elements found
+        for element in empty_elements:
+            parent = element.getparent()
+            if parent is not None:
+                parent.remove(element)
+
+    cleaned_html = lxml.html.tostring(cleaned_doc, encoding="unicode", pretty_print=True)
+    # Strip out carriage returns, repeating newlines, and multiple spaces
+    cleaned_html = cleaned_html.replace("\r\n", "\n")
+    cleaned_html = re.sub(r" {2,}", " ", cleaned_html)
+    cleaned_html = re.sub(r"\n{2,}", "\n", cleaned_html)
+    return cleaned_html
 
 
 def set_document_text(
@@ -452,13 +494,13 @@ def process_document(
                             text=str(from_path(local_path).best()),
                         )
                     case "htm" | "html":
-                        # The HTML files are often Word exports with a bunch of fluff, so extract just the text
+                        # The HTML files are often Word exports with a bunch of fluff, so clean before uploading
                         logger.info(f"Cleaning and uploading contents of {name}...")
                         set_document_text(
                             cursor,
                             table_prefix=table_prefix,
                             source_uri=source_uri,
-                            text=html_to_text(local_path),
+                            text=clean_html(local_path),
                         )
                     case "xls" | "xlsx" | "xlsm":
                         # Convert Excel to HTML
