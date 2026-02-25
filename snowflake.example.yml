@@ -12,10 +12,9 @@ env:
   metadata_model: "claude-4-sonnet"
   metadata_first_chars: 4000
   metadata_prompt: |
-    Create a comma-separated list of keywords extracted from the document text.
-    The goal is to enable retrieval-augmented generation (RAG) for a document chatbot.
-
-    Generate keywords that would help retrieve relevant content.
+    Create a newline-separated list of keywords extracted from the document text starting from most relevant.
+    
+    Generate keywords that would help retrieve relevant content for anticipated queries.
     Focus on:
      - key concepts
      - regulatory requirements
@@ -23,7 +22,7 @@ env:
      - product features
      - operational processes
 
-    Respond with just the keywords, no other text.
+    Respond with just the newline-separated keywords starting from most relevant, no other text.
   chunk_size: 5000
   chunk_overlap: 500
   agent_name: "DOCUMENT_AGENT"
@@ -37,17 +36,26 @@ env:
   # agent_color: "var(--chartDim_4-x1kcru7n)" # Red
   # agent_color: "var(--chartDim_5-x5ky746)"  # Purple
   agent_color: "var(--chartDim_6-x12aliq8)" # Orange
-  agent_model: "claude-sonnet-4-5"
-  agent_budget_seconds: 300
-  agent_budget_tokens: 16000
-  # Note that you must use `>-` because any newlines will break the agent creation template.
-  # Avoid double quotes (") as those will also break the template.
-  agent_instruction_response: >-
-    Present your answer to the user's question in bullet points.
-    You must append the source URI of the document you got the information from in parentheses in **plain text** after each bullet point.
-    For example: (XYZ Widgets Affiliate Agreement: local://source/uri/path.pdf).
-    DO NOT FORGET TO INCLUDE PLAINTEXT SOURCES AFTER EACH BULLET.
-  agent_instruction_orchestration: >-
-    Use document search tools to answer the user's questions.
+  agent_specification_without_tools: |
+    # Comment to anchor the indentation
+      models:
+        orchestration: claude-sonnet-4-5
+
+      orchestration:
+        budget:
+          seconds: 300
+          tokens: 16000
+
+      instructions:
+        response: |
+          Make sure your response is completely grounded in the document chunks you locate.
+          When in doubt, admit that you're uncertain or don't know rather than make something up.
+          Structure your response in bullet points.
+          Every bullet must be connected to a source chunk.
+          When multiple sources appear to present conflicting information, present that uncertainty to the user and let
+          them make the judgement call.
+        orchestration: |
+          Use all search tools that you have access to answer the user's questions.
+          Aim to synthesize more context from a diverse set of sources whenever possible.
   agent_metadata_max_results: 6
-  agent_document_max_results: 6
+  agent_content_max_results: 10

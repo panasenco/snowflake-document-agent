@@ -25,32 +25,26 @@ create cortex search service if not exists <% ctx.env.agent_name %>_search_conte
 alter cortex search service <% ctx.env.agent_name %>_search_contents suspend indexing;
 
 -- Agent
-create or replace agent snowflake_intelligence.agents.<% ctx.env.agent_name %>
+create agent if not exists snowflake_intelligence.agents.<% ctx.env.agent_name %>
   comment = '<% ctx.env.agent_description %>'
   profile = '{"avatar":  "<% ctx.env.agent_icon %>", "color": "<% ctx.env.agent_color %>"}'
   from specification
   $$
-  models:
-    orchestration: <% ctx.env.agent_model %>
-
-  orchestration:
-    budget:
-      seconds: <% ctx.env.agent_budget_seconds %>
-      tokens: <% ctx.env.agent_budget_tokens %>
-
-  instructions:
-    response: "<% ctx.env.agent_instruction_response %>"
-    orchestration: "<% ctx.env.agent_instruction_orchestration %>"
+  <% ctx.env.agent_specification_without_tools %>
 
   tools:
     - tool_spec:
         type: "cortex_search"
         name: "search_document_metadata"
-        description: "Use to locate documents by their ground-truth as well as synthetic metadata."
+        description: >
+          An LLM was asked to extract relevant keywords from each document.
+          Use this tool to search for documents that match the keywords in the query.
     - tool_spec:
         type: "cortex_search"
         name: "search_document_contents"
-        description: "Use to locate contextualized document chunks by their contents."
+        description: >
+          The parsed document contents were split into chunks for manageable LLM ingestion.
+          Use this tool to search for document content chunks that match the keywords in the query.
 
   tool_resources:
     search_document_metadata:
@@ -61,7 +55,7 @@ create or replace agent snowflake_intelligence.agents.<% ctx.env.agent_name %>
       
     search_document_contents:
       id_column: "SOURCE_URI"
-      max_results: <% ctx.env.agent_document_max_results %>
-      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.<% ctx.env.agent_name %>_SEARCH_CONTENTS_BARE"
+      max_results: <% ctx.env.agent_content_max_results %>
+      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.<% ctx.env.agent_name %>_SEARCH_CONTENTS"
       title_column: "DISPLAY_NAME"
   $$;
