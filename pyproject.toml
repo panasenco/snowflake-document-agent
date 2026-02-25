@@ -1,6 +1,6 @@
 [project]
 name = "snowflake-document-agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "Python ELT processes to incrementally load document files into Snowflake Document Agent"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -37,11 +37,6 @@ dev = [
 
 [tool.ruff]
 line-length = 120
-
-[tool.pytest.ini_options]
-markers = [
-    "integration: marks tests as integration tests (select with '-m integration')",
-]
 
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
