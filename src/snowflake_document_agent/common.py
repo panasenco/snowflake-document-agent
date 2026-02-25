@@ -287,14 +287,19 @@ def generate_document_metadata(
             :1 as source_uri,
             :2 as display_name,
             :3 as metadata_config_hash,
-            snowflake.cortex.complete(
-                :4,
-                'Document name: ' || :2 || chr(10) ||
-                'Document URI: ' || :1 || chr(10) || chr(10) ||
-                :5 || chr(10) || chr(10) ||
+            ai_complete(
+                model => :4,
+                prompt => :5 || chr(10) || chr(10) ||
+                '=== Document name: ' || :2 || chr(10) ||
+                '=== Document URI: ' || :1 || chr(10) || chr(10) ||
                 '=== Document excerpt starts here ===' || chr(10)
                 || substr(document_text, 1, :6) || chr(10) ||
-                '=== Document excerpt ends here ==='
+                '=== Document excerpt ends here ===',
+                model_parameters => {{
+                    'temperature': 0,
+                    'max_tokens': 1024
+                }},
+                show_details => false
             ) as generated_metadata
         from {table_prefix}document_text
         where source_uri = :1
