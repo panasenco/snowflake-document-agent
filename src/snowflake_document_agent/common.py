@@ -315,6 +315,7 @@ def chunk_document(
     *,
     table_prefix: str,
     source_uri: str,
+    display_name: str,
     chunk_config_hash: str,
     chunk_size: int,
     chunk_overlap: int,
@@ -322,10 +323,11 @@ def chunk_document(
     """Splits documents into overlapping chunks for easier search."""
     cursor.execute(
         f"""
-        insert into {table_prefix}document_chunks (source_uri, chunk_config_hash, document_chunk)
+        insert into {table_prefix}document_chunks (source_uri, display_name, chunk_config_hash, document_chunk)
         select
             :1 as source_uri,
-            :2 as chunk_config_hash,
+            :2 as display_name,
+            :3 as chunk_config_hash,
             chunks.value as document_chunk
         from {table_prefix}document_text as document_text
         inner join {table_prefix}document_metadata as document_metadata
@@ -333,12 +335,12 @@ def chunk_document(
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             document_text.document_text,
             'none',
-            :3,
-            :4
+            :4,
+            :5
         )) as chunks
         where document_text.source_uri = :1
         """,
-        (source_uri, chunk_config_hash, chunk_size, chunk_overlap),
+        (source_uri, display_name, chunk_config_hash, chunk_size, chunk_overlap),
     )
 
 
@@ -545,10 +547,11 @@ def process_document(
         elif update_display_name and current_metadata_row[0] != display_name:
             # Update just the display name
             logger.info(f"Updating the display name of {source_uri}: {current_metadata_row[0]} -> {display_name}...")
-            cursor.execute(
-                f"update {table_prefix}document_metadata set display_name = :2 where source_uri = :1",
-                (source_uri, display_name),
-            )
+            for table in ["document_metadata", "document_chunks"]:
+                cursor.execute(
+                    f"update {table_prefix}{table} set display_name = :2 where source_uri = :1",
+                    (source_uri, display_name),
+                )
             processed = True
         # Only recompute the chunks if the uri+config hash is not already present in the document_chunks table
         cursor.execute(
@@ -567,6 +570,7 @@ def process_document(
                     cursor,
                     table_prefix=table_prefix,
                     source_uri=source_uri,
+                    display_name=display_name,
                     chunk_config_hash=chunk_config_hash,
                     **chunk_config,
                 )
@@ -620,9 +624,16 @@ def refresh_search_services(configured_connection: SnowflakeConnection, /, *, ta
     """Make sure the snowflake-document-agent Cortex search services have the latest data.
     Accepts an already-configured (role, warehouse, schema set) connection object.
     """
-    with configured_connection.cursor() as cursor:
-        for search_service in ["search_metadata", "search_contents"]:
-            cursor.execute(f"alter cortex search service if exists {table_prefix}{search_service} refresh")
+    search_services = ["search_metadata", "search_contents"]
+    with ThreadPoolExecutor(len(search_services)) as executor:
+        with configured_connection.cursor() as cursor:
+            executor.map(
+                cursor.execute,
+                [
+                    f"alter cortex search service if exists {table_prefix}{search_service} refresh"
+                    for search_service in search_services
+                ],
+            )
 
 
 def process_changed_documents(
