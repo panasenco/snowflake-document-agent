@@ -10,7 +10,6 @@ from snowflake_document_agent.ingest_opentext import OpenTextDownloader
 
 
 def pytest_addoption(parser):
-    parser.addoption("--run-deployment", action="store_true", default=False, help="run deployment tests")
     parser.addoption(
         "--snowflake-connection-name", action="store", default=None, help="Snowflake connection name from config"
     )
@@ -25,55 +24,39 @@ def pytest_addoption(parser):
     )
 
 
-def pytest_configure(config):
-    config.addinivalue_line("markers", "deployment: mark test as deployment test")
-
-
-def pytest_collection_modifyitems(config, items):
-    if config.getoption("--run-deployment"):
-        return
-    skip_deployment = pytest.mark.skip(reason="need --run-deployment option to run")
-    for item in items:
-        if "deployment" in item.keywords:
-            item.add_marker(skip_deployment)
-
-
 @pytest.fixture(scope="session")
 def snowflake_conn(pytestconfig):
     """
     Establishes a connection to Snowflake.
-    Requires --snowflake-connection-name to be provided when --run-deployment is used.
     Skips gracefully if Snowflake connection name is not provided.
     """
-    if not pytestconfig.getoption("--run-deployment"):
-        yield None
-        return
-
     conn_name = pytestconfig.getoption("--snowflake-connection-name")
     if not conn_name:
-        pytest.skip("Snowflake integration tests skipped: --snowflake-connection-name not provided")
+        pytest.skip("Snowflake deployment tests skipped: --snowflake-connection-name not provided")
         return
 
     try:
-        conn = snowflake.connector.connect(connection_name=conn_name)
-        yield conn
-        conn.close()
+        with snowflake.connector.connect(connection_name=conn_name) as conn:
+            yield conn
     except Exception as e:
         pytest.fail(f"Failed to connect to Snowflake: {e}")
 
 
 @pytest.fixture(scope="session")
-def opentext_conn(pytestconfig):
+def opentext_node_id(pytestconfig):
+    node_id = pytestconfig.getoption("--opentext-node-id")
+    if node_id is None:
+        pytest.skip("Full deployment test requires OpenText node ID (use --opentext-node-id)")
+    return node_id
+
+
+@pytest.fixture(scope="session")
+def opentext_conn(opentext_node_id):
     """
     Creates an OpenText downloader for deployment tests.
-    Only available when --run-deployment is set to true.
     Reads configuration from environment variables.
-    Skips gracefully if OpenText credentials are not available.
+    Skips gracefully if OpenText node or OpenText credentials are not available.
     """
-    if not pytestconfig.getoption("--run-deployment"):
-        yield None
-        return
-
     try:
         # Create OpenText downloader using environment variables
         client = OpenTextDownloader()
@@ -148,10 +131,6 @@ def check_test_tables(snowflake_conn, pytestconfig):
     """
     Checks for the existence of test tables and displays setup instructions if missing.
     """
-    if snowflake_conn is None or not pytestconfig.getoption("--run-deployment"):
-        yield
-        return
-
     # Only check when using existing schema
     if not pytestconfig.getoption("--use-existing-schema"):
         yield
@@ -207,7 +186,7 @@ def check_test_tables(snowflake_conn, pytestconfig):
         )
         print()
         print("3. Then run tests with:")
-        print("   pytest --run-deployment --snowflake-connection-name=[your connection name] --use-existing-schema")
+        print("   pytest --snowflake-connection-name=[your connection name] --use-existing-schema")
         print("=" * 80)
         pytest.fail(f"Missing {len(missing_objects)} test objects. Run setup scripts first.")
 
@@ -304,7 +283,7 @@ def real_config(existing_schema):
         yield None
         return
 
-    with open(Path(__file__).parent.parent.parent / "snowflake.yml", "r") as f:
+    with open(Path(__file__).parent.parent / "snowflake.yml", "r") as f:
         config = yaml.safe_load(f)["env"]
 
     # Override the schema with existing schema name (should be the same, but just to be sure)

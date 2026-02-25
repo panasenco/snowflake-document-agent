@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 import shutil
 import time
@@ -8,16 +7,12 @@ from snowflake_document_agent.ingest_local import get_local_documents, local_dow
 from snowflake_document_agent.common import process_changed_documents
 
 
-@pytest.mark.deployment
 def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Comprehensive test: process local documents through the full pipeline with changes and error handling.
     Tests adding, updating, deleting files, plus various document types and error conditions.
     Combines both happy and unhappy paths like the test_process_documents_kitchen_sink test.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     mock_logger = MagicMock()
 
     # Override metadata prompt to test filename awareness
@@ -288,14 +283,10 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
     print("Kitchen sink test completed successfully - verified adds, updates, deletes, and error handling!")
 
 
-@pytest.mark.deployment
 def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test that refresh_search_services is NOT called when there are no changes to process.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     mock_logger = MagicMock()
 
     # Mock refresh_search_services to verify it's not called

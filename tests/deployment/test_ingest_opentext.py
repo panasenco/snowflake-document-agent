@@ -8,12 +8,8 @@ from snowflake_document_agent.ingest_opentext import OpenTextDownloader
 from snowflake_document_agent.common import process_changed_documents
 
 
-@pytest.mark.deployment
 def test_opentext_conn_fixture_deployment(opentext_conn):
     """Test that opentext_conn fixture works properly for deployment tests."""
-    if opentext_conn is None:
-        pytest.skip("Deployment tests not enabled (use --run-deployment)")
-
     # Should have an OpenTextDownloader instance
     assert isinstance(opentext_conn, OpenTextDownloader)
 
@@ -29,29 +25,21 @@ def test_opentext_conn_fixture_deployment(opentext_conn):
     assert "authorization" in opentext_conn.headers
 
 
-@pytest.mark.deployment
-def test_opentext_document_content_download(opentext_conn, pytestconfig):
+def test_opentext_document_content_download(opentext_conn, opentext_node_id):
     """Test downloading actual document content from OpenText using provided node ID."""
-    if opentext_conn is None:
-        pytest.skip("Deployment tests not enabled (use --run-deployment)")
-
-    node_id = pytestconfig.getoption("--opentext-node-id")
-    if node_id is None:
-        pytest.skip("OpenText node ID not provided (use --opentext-node-id)")
-
     try:
         # Call get_opentext_documents with the provided node ID
-        documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
+        documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[opentext_node_id])
 
         # Get the first document for content testing
         try:
             first_uri, first_display_name = next(documents_gen)
         except StopIteration:
             pytest.fail(
-                f"No documents found in OpenText node {node_id}. Expected to find a document for content testing."
+                f"No documents found in OpenText node {opentext_node_id}. Expected to find a document for content testing."
             )
 
-        print(f"✅ Found document from OpenText node {node_id}")
+        print(f"✅ Found document from OpenText node {opentext_node_id}")
 
         # Test downloading content from the first document
 
@@ -81,37 +69,31 @@ def test_opentext_document_content_download(opentext_conn, pytestconfig):
         # Provide helpful diagnostic messages but still fail the test
         if "401" in error_msg or "unauthorized" in error_msg:
             print("✅ OpenText API deployment successful!")
-            print(f"❌ Access denied for content in node {node_id} (expected in enterprise environments)")
+            print(f"❌ Access denied for content in node {opentext_node_id} (expected in enterprise environments)")
             print("🔒 This proves authentication works, but we don't have content access to this specific node")
-            pytest.fail(f"Access denied for OpenText node {node_id} content: {e}")
+            pytest.fail(f"Access denied for OpenText node {opentext_node_id} content: {e}")
         elif "404" in error_msg or "not found" in error_msg:
             print("✅ OpenText API deployment successful!")
-            print(f"❌ Document content not found for node {node_id} (may have been deleted or doesn't exist)")
-            pytest.fail(f"OpenText document content not found for node {node_id}: {e}")
+            print(f"❌ Document content not found for node {opentext_node_id} (may have been deleted or doesn't exist)")
+            pytest.fail(f"OpenText document content not found for node {opentext_node_id}: {e}")
         else:
             # Re-raise unexpected errors
             raise
 
 
-@pytest.mark.deployment
-def test_get_opentext_documents_deployment(opentext_conn, pytestconfig):
+def test_get_opentext_documents_deployment(opentext_conn, opentext_node_id):
     """Test get_opentext_documents with real OpenText API using provided node ID."""
-    if opentext_conn is None:
-        pytest.skip("Deployment tests not enabled (use --run-deployment)")
-
-    node_id = pytestconfig.getoption("--opentext-node-id")
-    if node_id is None:
-        pytest.skip("OpenText node ID not provided (use --opentext-node-id)")
-
     try:
         # Call get_opentext_documents with the provided node ID
-        documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
+        documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[opentext_node_id])
 
         # Get the first document for testing
         try:
             first_uri, first_display_name = next(documents_gen)
         except StopIteration:
-            pytest.fail(f"No documents found in OpenText node {node_id}. Expected to find a document for testing.")
+            pytest.fail(
+                f"No documents found in OpenText node {opentext_node_id}. Expected to find a document for testing."
+            )
 
         # Verify structure of the returned document
         # URI should start with the expected prefix
@@ -120,7 +102,7 @@ def test_get_opentext_documents_deployment(opentext_conn, pytestconfig):
         # Should be a string display name
         assert isinstance(first_display_name, str)
 
-        print(f"✅ Successfully discovered document from OpenText node {node_id}")
+        print(f"✅ Successfully discovered document from OpenText node {opentext_node_id}")
         print(f"  - {first_uri} -> {first_display_name}")
 
         # Check if document has a valid file extension in the display name
@@ -138,20 +120,19 @@ def test_get_opentext_documents_deployment(opentext_conn, pytestconfig):
         # Provide helpful diagnostic messages but still fail the test
         if "401" in error_msg or "unauthorized" in error_msg:
             print("✅ OpenText API deployment successful!")
-            print(f"❌ Access denied for node {node_id} (expected in enterprise environments)")
+            print(f"❌ Access denied for node {opentext_node_id} (expected in enterprise environments)")
             print("🔒 This proves authentication works, but we don't have access to this specific node")
-            pytest.fail(f"Access denied for OpenText node {node_id}: {e}")
+            pytest.fail(f"Access denied for OpenText node {opentext_node_id}: {e}")
         elif "404" in error_msg or "not found" in error_msg:
             print("✅ OpenText API deployment successful!")
-            print(f"❌ Node {node_id} not found (may have been deleted or doesn't exist)")
-            pytest.fail(f"OpenText node {node_id} not found: {e}")
+            print(f"❌ Node {opentext_node_id} not found (may have been deleted or doesn't exist)")
+            pytest.fail(f"OpenText node {opentext_node_id} not found: {e}")
         else:
             # Re-raise unexpected errors
             raise
 
 
-@pytest.mark.deployment
-def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test_config, pytestconfig):
+def test_full_opentext_to_snowflake_pipeline(opentext_conn, opentext_node_id, snowflake_conn, test_config):
     """Test complete pipeline: OpenText document discovery -> Snowflake data loading.
 
     This test requires both OpenText and Snowflake to be configured:
@@ -159,23 +140,15 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, snowflake_conn, test
     - Snowflake: --snowflake-connection-name must be provided
     - Node ID: --opentext-node-id must be provided
     """
-    # Skip if deployment tests not enabled
-    if opentext_conn is None or snowflake_conn is None:
-        pytest.skip("Full deployment test requires both OpenText and Snowflake (use --run-deployment)")
-
-    node_id = pytestconfig.getoption("--opentext-node-id")
-    if node_id is None:
-        pytest.skip("Full deployment test requires OpenText node ID (use --opentext-node-id)")
-
     print("🚀 Starting full OpenText -> Snowflake deployment pipeline test")
-    print(f"📁 OpenText Node ID: {node_id}")
+    print(f"📁 OpenText Node ID: {opentext_node_id}")
 
     # Step 1: Use Snowflake configuration from fixture
     print(f"📋 Loaded Snowflake config for schema: {test_config['schema']}")
 
     # Step 2: Discover OpenText documents
-    print(f"🔍 Discovering document from OpenText node {node_id}...")
-    documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[node_id])
+    print(f"🔍 Discovering document from OpenText node {opentext_node_id}...")
+    documents_gen = opentext_conn.get_opentext_documents(opentext_nodes=[opentext_node_id])
 
     print("✅ Got OpenText documents generator")
 
