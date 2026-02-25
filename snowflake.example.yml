@@ -24,8 +24,8 @@ env:
      - operational processes
 
     Respond with just the keywords, no other text.
-  chunk_size: 1800
-  chunk_overlap: 300
+  chunk_size: 5000
+  chunk_overlap: 500
   agent_name: "DOCUMENT_AGENT"
   agent_description: "Agent that can search document contents"
   agent_icon: "DocumentAgentIcon"
