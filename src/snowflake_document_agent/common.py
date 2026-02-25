@@ -61,7 +61,7 @@ def parse_common_options(parser: ArgumentParser) -> tuple[Namespace, dict[str, A
     1. Adds common arguments to the parser.
     2. Parses the arguments.
     3. Returns a tuple (parser_arguments, process_changed_documents_params, logger)
-    NOTE to not use -c, -d, -u, or -v in ingester-specific arguments!
+    NOTE: Do not use -c, -d, -u, or -v in ingester-specific arguments!
     """
     parser.add_argument(
         "-c", "--snowflake-connection", default="default", help="Name of Snowflake connection to use (default: default)"
@@ -376,9 +376,7 @@ def chunk_document(
             :2 as display_name,
             :3 as chunk_config_hash,
             chunks.value as document_chunk
-        from {table_prefix}document_text as document_text
-        inner join {table_prefix}document_metadata as document_metadata
-            on document_text.source_uri = document_metadata.source_uri,
+        from {table_prefix}document_text as document_text,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             document_text.document_text,
             'none',

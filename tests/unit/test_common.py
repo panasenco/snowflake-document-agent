@@ -7,7 +7,7 @@ from snowflake_document_agent.common import (
     docx_to_html,
     excel_to_html,
     doc_to_text,
-    html_to_text,
+    clean_html,
     process_changed_documents,
 )
 
@@ -109,46 +109,58 @@ def test_doc_to_text_basic():
 )
 def test_html_to_text_basic(fixture_name):
     """
-    Test that html_to_text extracts meaningful content from HTML with MS Word fluff.
-    Uses inscriptis to strip out styling, metadata, and other non-content elements.
+    Test that clean_html cleans HTML by removing MS Word fluff while preserving structure.
+    Strips out styling, metadata, and other non-content elements but keeps table structure.
     Tests both UTF-8 and UTF-16 encoded files.
     """
     # Use the fixture file with lots of Microsoft Word HTML fluff
     fixture_html = Path(__file__).parent.parent / "fixtures" / fixture_name
     assert fixture_html.exists(), f"Fixture file not found: {fixture_html}"
 
-    # Execute - Extract clean content from fluff HTML
-    clean_content = html_to_text(fixture_html)
+    # Execute - Clean HTML by removing fluff
+    cleaned_html = clean_html(fixture_html)
 
-    # Verify - Should return cleaned text content
-    assert clean_content is not None, "html_to_text returned None"
-    assert isinstance(clean_content, str), f"Expected string, got {type(clean_content)}"
-    assert len(clean_content.strip()) > 0, "Extracted content is empty"
+    # Verify - Should return cleaned HTML content
+    assert cleaned_html is not None, "clean_html returned None"
+    assert isinstance(cleaned_html, str), f"Expected string, got {type(cleaned_html)}"
+    assert len(cleaned_html.strip()) > 0, "Cleaned content is empty"
+
+    # Check that it's still HTML with structure preserved
+    html_lower = cleaned_html.lower()
+    assert "<table" in html_lower, "Expected table elements to be preserved"
+    assert "<tr" in html_lower, "Expected table row elements to be preserved"
+    assert "<td" in html_lower, "Expected table cell elements to be preserved"
+    assert "<p>" in html_lower or "<p " in html_lower, "Expected paragraph elements to be preserved"
 
     # Check that meaningful content is preserved
-    content_lower = clean_content.lower()
-    assert "service operations overview" in content_lower or "overview" in content_lower, (
-        "Expected document title in extracted content"
+    assert "service operations overview" in html_lower or "overview" in html_lower, (
+        "Expected document title in cleaned content"
     )
-    assert "table of contents" in content_lower, "Expected 'Table of Contents' in extracted content"
-    assert "account setup" in content_lower or "appointments" in content_lower, (
-        "Expected section headers in extracted content"
-    )
+    assert "table of contents" in html_lower, "Expected 'Table of Contents' in cleaned content"
+    assert "important" in html_lower, "Expected important content sections"
 
     # Check that Microsoft Word fluff is removed
-    assert "mso-" not in clean_content, "MS Office styling (mso-) should be stripped"
-    assert "xmlns:" not in clean_content, "XML namespaces should be stripped"
-    assert "<!--[if" not in clean_content, "Conditional comments should be stripped"
-    assert "WordSection" not in clean_content, "Word-specific classes should be stripped"
+    assert "mso-" not in cleaned_html, "MS Office styling (mso-) should be stripped"
+    assert "xmlns:" not in cleaned_html, "XML namespaces should be stripped"
+    assert "<!--[if" not in cleaned_html, "Conditional comments should be stripped"
+    assert "class=" not in cleaned_html, "CSS classes should be stripped"
+    assert "style=" not in cleaned_html, "Inline styles should be stripped"
+
+    # Check that empty tags are removed
+    assert "<b></b>" not in cleaned_html, "Empty <b> tags should be removed"
+    assert "<p></p>" not in cleaned_html, "Empty <p> tags should be removed"
+
+    # Check that multiple spaces are collapsed
+    assert "  " not in cleaned_html or cleaned_html.count("  ") < 5, "Multiple consecutive spaces should be collapsed"
 
     # The cleaned content should be significantly shorter than the original
     original_size = fixture_html.stat().st_size
-    cleaned_size = len(clean_content)
+    cleaned_size = len(cleaned_html)
     assert cleaned_size < original_size * 0.5, (
         f"Expected cleaned content to be much smaller (got {cleaned_size} bytes from {original_size} bytes)"
     )
 
-    print(f"Successfully extracted {len(clean_content)} characters of clean content from HTML fluff ({fixture_name})")
+    print(f"Successfully cleaned HTML to {len(cleaned_html)} characters from {original_size} bytes ({fixture_name})")
 
 
 def test_process_changed_documents_handles_none_sentinel():

@@ -29,14 +29,10 @@ def get_snowflake_documents(connection, prefix: str, table_prefix: str) -> dict[
         return {row[0]: row[1] for row in cursor.fetchall()}
 
 
-@pytest.mark.deployment
 def test_clear_stage_basic(snowflake_conn, test_schema, tmp_path):
     """
     Test that clear_stage properly removes all files from the @documents stage.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Setup - Create and stage some test files
         test_file1 = tmp_path / "test1.txt"
@@ -62,14 +58,10 @@ def test_clear_stage_basic(snowflake_conn, test_schema, tmp_path):
         assert len(files_after) == 0, f"Expected empty stage after clear, found {len(files_after)} files: {files_after}"
 
 
-@pytest.mark.deployment
 def test_stage_document_basic(snowflake_conn, test_schema, tmp_path):
     """
     Test that stage_document properly uploads a file to the @documents stage.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Setup - Create a test document
         test_file = tmp_path / "test_doc.txt"
@@ -96,14 +88,10 @@ def test_stage_document_basic(snowflake_conn, test_schema, tmp_path):
         assert len(stage_results) == 1, f"Expected 1 file in stage, found {len(stage_results)}"
 
 
-@pytest.mark.deployment
 def test_set_document_text_basic(snowflake_conn, test_schema, tmp_path):
     """
     Test that set_document_text properly sets text in the document_text table.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Setup - Using new URI format with query parameters
         source_uri = "test://integration/text_test.txt?timestamp=1234567890"
@@ -157,14 +145,10 @@ def test_set_document_text_basic(snowflake_conn, test_schema, tmp_path):
         assert new_text_result[1] == updated_text, f"Expected text content '{updated_text}', got '{new_text_result[1]}'"
 
 
-@pytest.mark.deployment
 def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
     """
     Test that parse_document properly parses a staged PDF using Cortex and stores the result.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         fixture_pdf = Path(__file__).parent.parent / "fixtures" / "cuad-sponsorship.pdf"
         assert fixture_pdf.exists(), f"Fixture file not found: {fixture_pdf}"
@@ -213,14 +197,10 @@ def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
         print(f"Successfully parsed {len(parsed_text)} characters from PDF")
 
 
-@pytest.mark.deployment
 def test_parse_document_error_handling(snowflake_conn, test_schema, tmp_path):
     """
     Test that parse_document properly handles invalid files with descriptive error messages.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Test Case 1: Empty file
         empty_file = tmp_path / "empty.pdf"
@@ -274,15 +254,11 @@ def test_parse_document_error_handling(snowflake_conn, test_schema, tmp_path):
         print("Error handling tests passed - invalid files properly rejected")
 
 
-@pytest.mark.deployment
 def test_stage_document_unsupported_file_types(snowflake_conn, test_schema, tmp_path):
     """
     Test that stage_document raises ValueError for unsupported file extensions.
     Cortex only supports: PDF, PPTX, DOCX, JPEG, JPG, PNG, TIFF, TIF, HTML, TXT
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Test Case 1: Video file
         video_file = tmp_path / "video.mp4"
@@ -335,14 +311,10 @@ def test_stage_document_unsupported_file_types(snowflake_conn, test_schema, tmp_
         print("File type validation tests passed - unsupported extensions properly rejected")
 
 
-@pytest.mark.deployment
 def test_generate_document_metadata_basic(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test that generate_document_metadata uses config metadata_prompt to generate metadata.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Setup - First create document text to generate metadata from
         source_uri = "test://integration/metadata_generation_test.txt?timestamp=1234567890"
@@ -391,20 +363,15 @@ def test_generate_document_metadata_basic(snowflake_conn, test_schema, test_conf
         print(f"Successfully generated metadata with filename awareness: '{generated_metadata[:100]}...'")
 
 
-@pytest.mark.deployment
 def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test that chunk_document splits documents into exact expected chunks using small config values.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Setup - Create simple, predictable document text
         source_uri = "test://integration/chunk_test.txt?timestamp=1234567890"
         display_name = "chunk_test.txt"
         test_text = "abcdefghijklmnopqrstuvwxyz"  # 26 characters
-        test_metadata = "Test"
 
         # Insert document text
         set_document_text(
@@ -412,12 +379,6 @@ def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path
             source_uri=source_uri,
             text=test_text,
             table_prefix="test_",
-        )
-
-        # Insert generated metadata (required by chunk_document)
-        cursor.execute(
-            "INSERT INTO test_document_metadata (source_uri, display_name, generated_metadata) VALUES (:1, :2, :3)",
-            (source_uri, display_name, test_metadata),
         )
 
         # Setup config with very small chunking parameters for precise testing
@@ -430,6 +391,7 @@ def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path
             cursor=cursor,
             table_prefix="test_",
             source_uri=source_uri,
+            display_name=display_name,
             chunk_config_hash="test_chunk_hash",
             chunk_size=config_with_small_chunks["chunk_size"],
             chunk_overlap=config_with_small_chunks["chunk_overlap"],
@@ -467,15 +429,11 @@ def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path
         print(f"Successfully created {len(document_chunks)} precise chunks: {document_chunks}")
 
 
-@pytest.mark.deployment
 def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Comprehensive test: throw everything at process_changed_documents and verify it handles gracefully.
     Tests all document types, nonexistent files, bad extensions, and corrupted files.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     mock_logger = MagicMock()
 
     # Override metadata prompt to test filename awareness - should now work with filename included
@@ -733,7 +691,6 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
     print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_exceptions)} errors")
 
 
-@pytest.mark.deployment
 def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test process_changed_documents function - incremental processing logic and delete_missing parameter.
@@ -745,8 +702,6 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     5. Calls refresh_search_services when there are changes
     6. Duplicate URI handling: Same source_uri appears multiple times - should only process first occurrence
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
 
     # Mock downloader that returns real fixture files
     def mock_downloader(source_uri: str) -> Path:
@@ -1107,7 +1062,6 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     print("✅ process_changed_documents test passed - incremental processing (new/delete only) works correctly!")
 
 
-@pytest.mark.deployment
 def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test for orphaned data bug at process_changed_documents level: when document processing fails at a later stage,
@@ -1116,9 +1070,6 @@ def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema
     This test uses a valid text file but corrupts the config to cause chunking to fail after earlier steps succeed.
     This validates that process_changed_documents properly cleans up orphaned data from earlier pipeline stages.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     # Create a valid text file (will succeed through parsing, text insertion, and metadata generation)
     text_file = tmp_path / "valid.txt"
     text_file.write_text("This is a valid text document that will process successfully until chunking fails.")
@@ -1169,15 +1120,11 @@ def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema
     print("✅ Orphaned data test passed - no partial data left from failed process_changed_documents!")
 
 
-@pytest.mark.deployment
 def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test delete_document function - should selectively remove document data based on flags and config hashes.
     Tests conditional deletion from: document_text, document_metadata, document_chunks
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     # === SETUP: Create test document with data in all tables ===
     test_uri = "test://delete/test_doc.txt?timestamp=1"
     test_display_name = "Test Document"
@@ -1302,7 +1249,6 @@ def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
     print("✅ delete_document test passed - selective deletion by config hash works correctly!")
 
 
-@pytest.mark.deployment
 def test_stage_document_edge_cases(snowflake_conn, test_schema, tmp_path):
     """
     Test that stage_document properly parses URI edge cases with tricky filenames.
@@ -1310,9 +1256,6 @@ def test_stage_document_edge_cases(snowflake_conn, test_schema, tmp_path):
     and just [path (without leading /)] otherwise. Query parameters should be stripped.
     URL-encoded identifiers should be properly unescaped.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     with snowflake_conn.cursor() as cursor:
         # Create a test document with tricky filename including backslash and single quote
         test_file = tmp_path / "File&With=Special@Chars\\and'quotes.txt"
@@ -1448,16 +1391,12 @@ def test_stage_document_edge_cases(snowflake_conn, test_schema, tmp_path):
         assert len(staged_files) >= 6, f"Expected at least 6 staged files, found {len(staged_files)}"
 
 
-@pytest.mark.deployment
 def test_refresh_search_services(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test refresh_search_services function - should refresh both Cortex search services with latest data.
     Tests the two hardcoded search services: search_metadata and search_contents.
     Verifies that data_timestamp gets updated after refresh.
     """
-    if not snowflake_conn:
-        pytest.skip("No Snowflake connection")
-
     # The two search services from setup_05_cortex_search_agent.sql
     search_services = ["test_search_metadata", "test_search_contents"]
 
