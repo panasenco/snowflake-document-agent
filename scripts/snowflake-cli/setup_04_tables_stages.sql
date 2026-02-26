@@ -26,6 +26,7 @@ create table if not exists <% ctx.env.agent_name %>_document_chunks (
     source_uri string,
     display_name string,
     chunk_config_hash string,
+    chunk_index integer,
     document_chunk string
 ) change_tracking = true;
 grant select, insert, delete, update, truncate on table <% ctx.env.agent_name %>_document_chunks to role <% ctx.env.role %>;
