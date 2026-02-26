@@ -370,11 +370,18 @@ def chunk_document(
     """Splits documents into overlapping chunks for easier search."""
     cursor.execute(
         f"""
-        insert into {table_prefix}document_chunks (source_uri, display_name, chunk_config_hash, document_chunk)
+        insert into {table_prefix}document_chunks (
+            source_uri,
+            display_name,
+            chunk_config_hash,
+            chunk_index,
+            document_chunk
+        )
         select
             :1 as source_uri,
             :2 as display_name,
             :3 as chunk_config_hash,
+            chunks.index as chunk_index,
             chunks.value as document_chunk
         from {table_prefix}document_text as document_text,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
