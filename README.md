@@ -124,7 +124,7 @@ Replace `12345678` in the below command with your real OpenText node ID that sho
 uploaded to Snowflake:
 
 ```sh
-ingest-local --snowflake-connection default --verbose 12345678
+ingest-opentext --snowflake-connection default --verbose 12345678
 ```
 
 ### Ingestion notes
