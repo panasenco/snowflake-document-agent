@@ -29,6 +29,7 @@ create agent if not exists snowflake_intelligence.agents.<% ctx.env.agent_name %
   comment = '<% ctx.env.agent_description %>'
   profile = '{"avatar":  "<% ctx.env.agent_icon %>", "color": "<% ctx.env.agent_color %>"}'
   from specification
+-- alter agent snowflake_intelligence.agents.<% ctx.env.agent_name %> modify live version set specification =
   $$
   <% ctx.env.agent_specification_without_tools %>
 
