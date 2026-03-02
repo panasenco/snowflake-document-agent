@@ -1,0 +1,13 @@
+evaluator:
+  model: claude-3_7-us
+  eval_method: canonical
+target:
+  type: src.snowflake_document_agent.agenteval_target.SnowflakeAgentTarget
+  agent_name: DOCUMENT_AGENT
+  snowflake_account: my-snowflake-account
+tests:
+  retrieve_missing_documents:
+    steps:
+    - Ask agent for a list of missing documents for claim-006.
+    expected_results:
+    - The agent returns a list of missing documents.
