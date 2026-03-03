@@ -5,7 +5,7 @@
 /agenteval.yml
 # Agent evaluator summary and traces
 /agenteval_traces
-/agenteval_summary.md
+/agenteval_summary*.md
 
 # Environment file
 /.env

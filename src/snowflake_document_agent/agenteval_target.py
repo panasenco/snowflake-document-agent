@@ -78,4 +78,5 @@ class SnowflakeAgentTarget(BaseTarget):
         if "content" not in response_payload:
             raise RuntimeError(f"No 'content' field in {response_payload=}")
         response_parts = [item["text"] for item in response_payload["content"] if item.get("type") == "text"]
-        return TargetResponse(response="\n".join(response_parts).strip())
+        response_text = "\n".join(response_parts).strip()
+        return TargetResponse(response=response_text)
