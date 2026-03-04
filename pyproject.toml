@@ -1,6 +1,6 @@
 [project]
 name = "snowflake-document-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "Python ELT processes to incrementally load document files into Snowflake Document Agent"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "agent-evaluation @ git+https://github.com/panasenco/agent-evaluation.git@fix-reasoning-none-validation-error",
     "pytest>=9.0.2",
     "ruff>=0.9.0",
     "snowflake-cli>=3.14.0",
@@ -32,10 +33,10 @@ ingest-opentext = "snowflake_document_agent.ingest_opentext:main"
 
 [dependency-groups]
 dev = [
+    "agent-evaluation @ git+https://github.com/panasenco/agent-evaluation.git@fix-reasoning-none-validation-error",
     "pytest>=9.0.2",
     "ruff>=0.9.0",
     "snowflake-cli>=3.14.0",
-    "responses>=0.24.0",
 ]
 
 [tool.ruff]
