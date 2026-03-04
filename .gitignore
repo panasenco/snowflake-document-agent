@@ -1,11 +1,9 @@
 # Ignore the real snowflake.yml config
 /snowflake.yml
 
-# Ignore the real agent-evaluator config
-/agenteval.yml
-# Agent evaluator summary and traces
-/agenteval_traces
-/agenteval_summary*.md
+# Ignore everything in the agenteval folder except the example subfolder
+/agenteval/*
+!/agenteval/example
 
 # Environment file
 /.env

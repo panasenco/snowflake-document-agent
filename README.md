@@ -135,3 +135,34 @@ ingest-opentext --snowflake-connection default --verbose 12345678
 After an ingestion, your agent is ready to use!
 The agent's name will be whatever is configured in your snowflake.yml.
 Just ask the agent a question about anything within your documents and it should be able to answer!
+
+## Automated evaluations
+
+We currently only support the AWS-based [agent-evaluation](https://awslabs.github.io/agent-evaluation/evaluators/)
+framework, though other frameworks may be added in the future.
+
+### AWS agent-evaluation
+
+We support the open-source AWS Labs framework [agent-evaluation](https://awslabs.github.io/agent-evaluation/evaluators/)
+to run automated evaluations on the agent.
+
+The advantage of agent-evaluation is it allows a direct apples-to-apples comparison with AWS Bedrock based agents.
+The disadvantage is that you need to be signed into an AWS account with Bedrock access to run it.
+
+To run automated evaluations, be sure to install the dev dependencies with either `pip install -e .[dev]` or `uv sync`.
+
+Then create a subfolder `agenteval/mytests`, copying `agenteval/example/agenteval.yml` into the new folder.
+Change the config parameters `agent_name` and `snowflake_account`.
+You'll also need to export the environment variable `SNOWFLAKE_TOKEN` containing a Snowflake auth token for the account
+(tested with PAT, but should work with PAT / SSH / OAuth).
+Change the example step and expected result to be something actually meaningful for the agent you're testing.
+
+Finally:
+```sh
+cd agenteval/mytests
+agenteval run
+```
+
+This will run all the prompts and use an LLM judge to compare the outputs with the expected results.
+The results will be saved in the file `agenteval_summary.md`.
+Be sure to rename this file if you want to keep the results - otherwise the file will be overwritten on the next run!
