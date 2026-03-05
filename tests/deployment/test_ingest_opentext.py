@@ -169,29 +169,18 @@ def test_full_opentext_to_snowflake_pipeline(opentext_conn, opentext_node_id, sn
     print("🔍 Verifying data was loaded into Snowflake...")
     with snowflake_conn.cursor() as cursor:
         # Check the actual document tables for loaded records
-        cursor.execute("SELECT COUNT(*) FROM test_document_metadata")
-        metadata_count = cursor.fetchone()[0]
-
         cursor.execute("SELECT COUNT(*) FROM test_document_text")
         text_count = cursor.fetchone()[0]
 
         cursor.execute("SELECT COUNT(*) FROM test_document_chunks")
         chunk_count = cursor.fetchone()[0]
 
-        print(f"📊 Document metadata: {metadata_count} records")
         print(f"📊 Document text: {text_count} records")
         print(f"📊 Document chunks: {chunk_count} records")
 
         # Verify we have exactly one document processed
-        assert metadata_count == 1, f"Expected exactly 1 document metadata record, but got {metadata_count}"
         assert text_count == 1, f"Expected exactly 1 document text record, but got {text_count}"
         assert chunk_count >= 1, f"Expected at least 1 chunk record, but got {chunk_count}"
 
-        # Show the loaded document
-        cursor.execute("SELECT source_uri, LEFT(generated_metadata, 50) FROM test_document_metadata LIMIT 1")
-        doc = cursor.fetchone()
-        print("📄 Loaded document:")
-        print(f"  - {doc[0]} -> {doc[1]}...")
-
     print("🎉 Full OpenText -> Snowflake deployment pipeline test completed successfully!")
-    print(f"📈 Summary: 1 OpenText document -> {metadata_count} DB metadata -> {chunk_count} DB chunks")
+    print(f"📈 Summary: 1 OpenText document -> {chunk_count} DB chunks")

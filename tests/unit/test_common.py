@@ -205,9 +205,6 @@ def test_process_changed_documents_handles_none_sentinel():
             prefix="test://unit/",
             config={
                 "agent_name": "test",
-                "metadata_model": "test",
-                "metadata_prompt": "test",
-                "metadata_first_chars": 100,
                 "chunk_size": 1000,
                 "chunk_overlap": 100,
             },

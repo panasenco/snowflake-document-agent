@@ -9,20 +9,6 @@ env:
   warehouse_auto_suspend: 30
   role: "DOCUMENT_AGENT_ROLE"
   search_embedding_model: "snowflake-arctic-embed-l-v2.0"
-  metadata_model: "claude-4-sonnet"
-  metadata_first_chars: 4000
-  metadata_prompt: |
-    Create a newline-separated list of keywords extracted from the document text starting from most relevant.
-    
-    Generate keywords that would help retrieve relevant content for anticipated queries.
-    Focus on:
-     - key concepts
-     - regulatory requirements
-     - procedural topics
-     - product features
-     - operational processes
-
-    Respond with just the newline-separated keywords starting from most relevant, no other text.
   chunk_size: 5000
   chunk_overlap: 500
   agent_name: "DOCUMENT_AGENT"
@@ -57,5 +43,4 @@ env:
         orchestration: |
           Use all search tools that you have access to answer the user's questions.
           Aim to synthesize more context from a diverse set of sources whenever possible.
-  agent_metadata_max_results: 6
-  agent_content_max_results: 10
+  agent_content_max_results: 20

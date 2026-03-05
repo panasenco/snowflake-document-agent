@@ -26,7 +26,7 @@ import yaml
 
 snowflake.connector.paramstyle = "numeric"
 
-ALL_TABLES = ["document_metadata", "document_text", "document_chunks"]
+ALL_TABLES = ["document_text", "document_chunks"]
 # See https://docs.snowflake.com/en/user-guide/snowflake-cortex/parse-document#input-requirements
 CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "htm", "html", "txt"}
 
@@ -310,53 +310,6 @@ def parse_document(
         raise RuntimeError(f"Document parsing for {source_uri} failed with error: {parsed_text}")
 
 
-def generate_document_metadata(
-    cursor: SnowflakeCursor,
-    *,
-    table_prefix: str,
-    source_uri: str,
-    display_name: str,
-    metadata_config_hash: str,
-    metadata_model: str,
-    metadata_prompt: str,
-    metadata_first_chars: int,
-) -> None:
-    """Generates synthetic metadata for a parsed document."""
-    cursor.execute(
-        f"""
-        insert into {table_prefix}document_metadata (source_uri, display_name, metadata_config_hash, generated_metadata)
-        select
-            :1 as source_uri,
-            :2 as display_name,
-            :3 as metadata_config_hash,
-            ai_complete(
-                model => :4,
-                prompt => :5 || chr(10) || chr(10) ||
-                '=== Document name: ' || :2 || chr(10) ||
-                '=== Document URI: ' || :1 || chr(10) || chr(10) ||
-                '=== Document excerpt starts here ===' || chr(10)
-                || substr(document_text, 1, :6) || chr(10) ||
-                '=== Document excerpt ends here ===',
-                model_parameters => {{
-                    'temperature': 0,
-                    'max_tokens': 1024
-                }},
-                show_details => false
-            ) as generated_metadata
-        from {table_prefix}document_text
-        where source_uri = :1
-        """,
-        (
-            source_uri,
-            display_name,
-            metadata_config_hash,
-            metadata_model,
-            metadata_prompt,
-            metadata_first_chars,
-        ),
-    )
-
-
 def chunk_document(
     cursor: SnowflakeCursor,
     *,
@@ -432,25 +385,12 @@ def delete_document(
     *,
     table_prefix: str,
     source_uri_new: bool = False,
-    metadata_config_hash: str | None = None,
     chunk_config_hash: str | None = None,
 ) -> None:
     if source_uri_new:
         delete_rows(
             cursor,
             {"document_text": ("source_uri = :1", source_uri)},
-            table_prefix=table_prefix,
-        )
-    if metadata_config_hash:
-        delete_rows(
-            cursor,
-            {
-                "document_metadata": (
-                    "source_uri = :1 and metadata_config_hash = :2",
-                    source_uri,
-                    metadata_config_hash,
-                ),
-            },
             table_prefix=table_prefix,
         )
     if chunk_config_hash:
@@ -467,8 +407,6 @@ def process_document(
     display_name: str,
     downloader: Callable[[str], Path],
     table_prefix: str,
-    metadata_config: dict[str, Any],
-    metadata_config_hash: str,
     chunk_config: dict[str, Any],
     chunk_config_hash: str,
     update_display_name: bool = False,
@@ -479,7 +417,6 @@ def process_document(
     processed = False
     local_path = downloader(source_uri)
     source_uri_new = False
-    metadata_config_new = False
     chunk_config_new = False
     with configured_connection.cursor() as cursor:
         # Only reload/reparse if the uri is not already present in the document_text table
@@ -563,57 +500,16 @@ def process_document(
                     source_uri_new=True,
                 )
                 return (0, 0, 1)
-        # Only recompute the metadata if the uri+config hash is not already present in the document_metadata table
-        cursor.execute(
-            f"""
-            select display_name from {table_prefix}document_metadata
-            where source_uri = :1 and metadata_config_hash = :2
-            """,
-            (source_uri, metadata_config_hash),
-        )
-        current_metadata_row = cursor.fetchone()
-        if current_metadata_row is None:
-            metadata_config_new = True
-            # Generate synthetic metadata
-            try:
-                logger.info(f"Generating synthetic metadata for document {name}...")
-                generate_document_metadata(
-                    cursor,
-                    table_prefix=table_prefix,
-                    source_uri=source_uri,
-                    display_name=display_name,
-                    metadata_config_hash=metadata_config_hash,
-                    **metadata_config,
-                )
-                processed = True
-            except Exception:
-                logger.exception(f"Error generating metadata for {name} - removing version.")
-                delete_document(
-                    cursor,
-                    source_uri,
-                    table_prefix=table_prefix,
-                    source_uri_new=source_uri_new,
-                    metadata_config_hash=metadata_config_hash if metadata_config_new else None,
-                )
-                return (0, 0, 1)
-        elif update_display_name and current_metadata_row[0] != display_name:
-            # Update just the display name
-            logger.info(f"Updating the display name of {source_uri}: {current_metadata_row[0]} -> {display_name}...")
-            for table in ["document_metadata", "document_chunks"]:
-                cursor.execute(
-                    f"update {table_prefix}{table} set display_name = :2 where source_uri = :1",
-                    (source_uri, display_name),
-                )
-            processed = True
         # Only recompute the chunks if the uri+config hash is not already present in the document_chunks table
         cursor.execute(
             f"""
-            select count(*) from {table_prefix}document_chunks
+            select display_name from {table_prefix}document_chunks
             where source_uri = :1 and chunk_config_hash = :2
             """,
             (source_uri, chunk_config_hash),
         )
-        if cursor.fetchone()[0] == 0:
+        current_chunk_row = cursor.fetchone()
+        if current_chunk_row is None:
             chunk_config_new = True
             # Split the document into chunks
             try:
@@ -634,24 +530,25 @@ def process_document(
                     source_uri,
                     table_prefix=table_prefix,
                     source_uri_new=source_uri_new,
-                    metadata_config_hash=metadata_config_hash if metadata_config_new else None,
                     chunk_config_hash=chunk_config_hash if chunk_config_new else None,
                 )
                 return (0, 0, 1)
+        elif update_display_name and current_chunk_row[0] != display_name:
+            # Update just the display name
+            logger.info(f"Updating the display name of {source_uri}: {current_chunk_row[0]} -> {display_name}...")
+            cursor.execute(
+                f"update {table_prefix}document_chunks set display_name = :2 where source_uri = :1",
+                (source_uri, display_name),
+            )
+            processed = True
         if processed:
             # Commit the changes
-            logger.info(f"Processed {name} - Deleting previous versions of text/metadata/chunks")
+            logger.info(f"Processed {name} - Deleting previous versions of text/chunks")
             source_pattern = get_source_pattern(source_uri)
             delete_rows(
                 cursor,
                 {
                     "document_text": ("source_uri like :1 and not (source_uri = :2)", source_pattern, source_uri),
-                    "document_metadata": (
-                        "source_uri like :1 and not (source_uri = :2 and metadata_config_hash = :3)",
-                        source_pattern,
-                        source_uri,
-                        metadata_config_hash,
-                    ),
                     "document_chunks": (
                         "source_uri like :1 and not (source_uri = :2 and chunk_config_hash = :3)",
                         source_pattern,
@@ -676,7 +573,7 @@ def refresh_search_services(configured_connection: SnowflakeConnection, /, *, ta
     """Make sure the snowflake-document-agent Cortex search services have the latest data.
     Accepts an already-configured (role, warehouse, schema set) connection object.
     """
-    search_services = ["search_metadata", "search_contents"]
+    search_services = ["search_contents"]
     with ThreadPoolExecutor(len(search_services)) as executor:
         with configured_connection.cursor() as cursor:
             executor.map(
@@ -714,9 +611,6 @@ def process_changed_documents(
     if config is None:
         config = load_config()
     table_prefix = config["agent_name"].lower() + "_"
-    # Collect the metadata config and compute its hash
-    metadata_config = {key: config[key] for key in ["metadata_model", "metadata_prompt", "metadata_first_chars"]}
-    metadata_config_hash = dict_hash(metadata_config)
     # Collect the chunk config and compute its hash
     chunk_config = {key: config[key] for key in ["chunk_size", "chunk_overlap"]}
     chunk_config_hash = dict_hash(chunk_config)
@@ -763,8 +657,6 @@ def process_changed_documents(
                             display_name,
                             downloader,
                             table_prefix,
-                            metadata_config,
-                            metadata_config_hash,
                             chunk_config,
                             chunk_config_hash,
                             update_display_names,

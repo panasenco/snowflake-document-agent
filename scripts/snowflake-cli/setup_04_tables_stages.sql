@@ -13,15 +13,6 @@ create table if not exists <% ctx.env.agent_name %>_document_text (
 ) change_tracking = true;
 grant select, insert, delete, update, truncate on table <% ctx.env.agent_name %>_document_text to role <% ctx.env.role %>;
 
--- Underlying table for metadata search
-create table if not exists <% ctx.env.agent_name %>_document_metadata (
-    source_uri string,
-    display_name string,
-    metadata_config_hash string,
-    generated_metadata string
-) change_tracking = true;
-grant select, insert, delete, update, truncate on table <% ctx.env.agent_name %>_document_metadata to role <% ctx.env.role %>;
-
 create table if not exists <% ctx.env.agent_name %>_document_chunks (
     source_uri string,
     display_name string,

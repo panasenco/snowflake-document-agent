@@ -141,7 +141,7 @@ def check_test_tables(snowflake_conn, pytestconfig):
     # Check for test tables with 'test_' prefix
     test_tables = [f"test_{table}" for table in ALL_TABLES]
     test_stage = "test_documents"
-    test_services = ["test_search_metadata", "test_search_contents"]
+    test_services = ["test_search_contents"]
 
     missing_objects = []
 
