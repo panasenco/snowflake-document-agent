@@ -29,6 +29,13 @@ create agent if not exists snowflake_intelligence.agents.<% ctx.env.agent_name %
         description: >
           The parsed document contents were split into chunks for manageable LLM ingestion.
           Use this tool to search for document content chunks that match the keywords in the query.
+          Each chunk will be in the following format:
+          ```
+          Document filename
+          Chunk number (starting with 1) / Total chunks in document
+
+          Chunk content
+          ```
 
   tool_resources:
     search_document_contents:
