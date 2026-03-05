@@ -2,17 +2,6 @@
 use role <% ctx.env.role %>;
 use schema <% ctx.env.database %>.<% ctx.env.schema %>;
 
--- Metadata search
-create cortex search service if not exists <% ctx.env.agent_name %>_search_metadata
-    on generated_metadata
-    warehouse = <% ctx.env.warehouse %>
-    target_lag = '1 day'
-    embedding_model = '<% ctx.env.search_embedding_model %>'
-    initialize = on_schedule
-    as select * from <% ctx.env.agent_name %>_document_metadata;
-
-alter cortex search service <% ctx.env.agent_name %>_search_metadata suspend indexing;
-
 -- Content search
 create cortex search service if not exists <% ctx.env.agent_name %>_search_contents
     on document_chunk
@@ -36,24 +25,12 @@ create agent if not exists snowflake_intelligence.agents.<% ctx.env.agent_name %
   tools:
     - tool_spec:
         type: "cortex_search"
-        name: "search_document_metadata"
-        description: >
-          An LLM was asked to extract relevant keywords from each document.
-          Use this tool to search for documents that match the keywords in the query.
-    - tool_spec:
-        type: "cortex_search"
         name: "search_document_contents"
         description: >
           The parsed document contents were split into chunks for manageable LLM ingestion.
           Use this tool to search for document content chunks that match the keywords in the query.
 
   tool_resources:
-    search_document_metadata:
-      id_column: "SOURCE_URI"
-      max_results: <% ctx.env.agent_metadata_max_results %>
-      search_service: "<% ctx.env.database %>.<% ctx.env.schema %>.<% ctx.env.agent_name %>_SEARCH_METADATA"
-      title_column: "DISPLAY_NAME"
-      
     search_document_contents:
       id_column: "SOURCE_URI"
       max_results: <% ctx.env.agent_content_max_results %>

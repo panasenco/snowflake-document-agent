@@ -9,7 +9,6 @@ from snowflake_document_agent.common import (
     stage_document,
     set_document_text,
     parse_document,
-    generate_document_metadata,
     chunk_document,
     clear_stage,
     process_changed_documents,
@@ -23,7 +22,7 @@ def get_snowflake_documents(connection, prefix: str, table_prefix: str) -> dict[
     """Helper function to get documents from Snowflake matching a prefix. Returns dict mapping source_uri to display_name."""
     with connection.cursor() as cursor:
         cursor.execute(
-            f"SELECT source_uri, display_name FROM {table_prefix}document_metadata WHERE source_uri LIKE :1",
+            f"select distinct source_uri, display_name from {table_prefix}document_chunks where source_uri like :1",
             (prefix + "%",),
         )
         return {row[0]: row[1] for row in cursor.fetchall()}
@@ -311,58 +310,6 @@ def test_stage_document_unsupported_file_types(snowflake_conn, test_schema, tmp_
         print("File type validation tests passed - unsupported extensions properly rejected")
 
 
-def test_generate_document_metadata_basic(snowflake_conn, test_schema, test_config, tmp_path):
-    """
-    Test that generate_document_metadata uses config metadata_prompt to generate metadata.
-    """
-    with snowflake_conn.cursor() as cursor:
-        # Setup - First create document text to generate metadata from
-        source_uri = "test://integration/metadata_generation_test.txt?timestamp=1234567890"
-        display_name = "metadata_generation_test.txt"
-        test_text = "This is a test document for metadata generation."
-
-        # Insert document text
-        set_document_text(
-            cursor=cursor,
-            source_uri=source_uri,
-            text=test_text,
-            table_prefix="test_",
-        )
-
-        # Setup config to test filename awareness - should fail because we don't pass source URI to metadata generation
-        test_config["metadata_prompt"] = (
-            "Look at the filename and return this string exactly: File extension: [extension without leading period]"
-        )
-
-        # Execute - Generate metadata with test config
-        generate_document_metadata(
-            cursor=cursor,
-            table_prefix="test_",
-            source_uri=source_uri,
-            display_name=display_name,
-            metadata_config_hash="test_meta_hash",
-            metadata_model=test_config["metadata_model"],
-            metadata_prompt=test_config["metadata_prompt"],
-            metadata_first_chars=test_config["metadata_first_chars"],
-        )
-
-        # Verify - Check that metadata was inserted into test_document_metadata table
-        cursor.execute(
-            "SELECT source_uri, generated_metadata FROM test_document_metadata WHERE source_uri = :1", (source_uri,)
-        )
-        metadata_result = cursor.fetchone()
-        assert metadata_result is not None, "No generated metadata found in document_metadata table"
-        assert metadata_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{metadata_result[0]}'"
-
-        # Verify the generated metadata contains file extension (should work - filename is passed to AI in display_name)
-        generated_metadata = metadata_result[1]
-        assert "File extension: txt" in generated_metadata, (
-            f"Expected 'File extension: txt' in metadata, got '{generated_metadata}'"
-        )
-
-        print(f"Successfully generated metadata with filename awareness: '{generated_metadata[:100]}...'")
-
-
 def test_chunk_document_basic(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test that chunk_document splits documents into exact expected chunks using small config values.
@@ -435,11 +382,6 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
     Tests all document types, nonexistent files, bad extensions, and corrupted files.
     """
     mock_logger = MagicMock()
-
-    # Override metadata prompt to test filename awareness - should now work with filename included
-    test_config["metadata_prompt"] = (
-        "Look at the filename and return this string exactly: File extension: [extension without leading period]"
-    )
 
     # Define specific timestamps for testing
     txt_timestamp = int(datetime(2024, 1, 1, 10, 30, 0, tzinfo=timezone.utc).timestamp())
@@ -594,10 +536,6 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
         text_count = cursor.fetchone()[0]
         assert text_count == 6, f"Expected exactly 6 successful document_text entries, got {text_count}"
 
-        cursor.execute("SELECT COUNT(*) FROM test_document_metadata")
-        metadata_count = cursor.fetchone()[0]
-        assert metadata_count == 6, f"Expected exactly 6 successful metadata entries, got {metadata_count}"
-
         # === DETAILED CONTENT VERIFICATION ===
         # Verify specific content for each document type (incorporating test_process_document_multiple_types checks)
 
@@ -665,28 +603,6 @@ def test_process_changed_documents_kitchen_sink(snowflake_conn, test_schema, tes
             f"Expected 'Invalid UTF-8 content' text to be readable, got: {content[:200]}..."
         )
         assert len(content.strip()) > 0, "Content should not be empty"
-
-        # Verify generated metadata contains file extension information (should now work with filename awareness)
-        test_cases = [
-            ("test://kitchen/success.txt?timestamp=", "txt"),
-            ("test://kitchen/success.html?timestamp=", "html"),
-            ("test://kitchen/cuad-sponsorship.pdf?timestamp=", "pdf"),
-            ("test://kitchen/mammoth-tables.docx?timestamp=", "docx"),
-            ("test://kitchen/multi-worksheet.xlsx?timestamp=", "xlsx"),
-            ("test://kitchen/invalid_utf8.html?timestamp=", "html"),
-        ]
-
-        for source_uri_pattern, expected_ext in test_cases:
-            cursor.execute(
-                "SELECT generated_metadata FROM test_document_metadata WHERE source_uri LIKE :1",
-                (source_uri_pattern + "%",),
-            )
-            metadata_result = cursor.fetchone()
-            if metadata_result:
-                expected_text = f"File extension: {expected_ext}"
-                assert expected_text in metadata_result[0], (
-                    f"Expected '{expected_text}' in metadata for pattern {source_uri_pattern}: {metadata_result[0][:200]}..."
-                )
 
     print(f"✅ Kitchen sink test passed! Processed {text_count} documents, logged {len(logged_exceptions)} errors")
 
@@ -922,7 +838,6 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     print("Phase 3: delete_missing = True + broken iterator")
 
     # Extract config components for process_document
-    metadata_config = {key: test_config[key] for key in ["metadata_model", "metadata_prompt", "metadata_first_chars"]}
     chunk_config = {key: test_config[key] for key in ["chunk_size", "chunk_overlap"]}
 
     process_document(
@@ -931,8 +846,6 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
         "Old Document",
         mock_downloader,
         "test_",
-        metadata_config,
-        "test_meta_hash",
         chunk_config,
         "test_chunk_hash",
     )
@@ -975,41 +888,41 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     # === VERIFY DISPLAY NAME UPDATES ===
     # Check that display names were updated for existing documents (when feature is implemented)
     with snowflake_conn.cursor() as cursor:
-        # Check display names in document_metadata table
+        # Check display names in document_chunks table
         cursor.execute(
-            "SELECT source_uri, display_name FROM test_document_metadata WHERE source_uri LIKE :1 ORDER BY source_uri",
+            "select distinct source_uri, display_name from test_document_chunks where source_uri like :1 order by source_uri",
             ("test://project/doc%.txt?timestamp=%",),
         )
-        doc1_metadata = cursor.fetchone()
+        doc1_info = cursor.fetchone()
 
         cursor.execute(
-            "SELECT source_uri, display_name FROM test_document_metadata WHERE source_uri LIKE :1 ORDER BY source_uri",
+            "select distinct source_uri, display_name from test_document_chunks where source_uri like :1 order by source_uri",
             ("test://project/doc%.pdf?timestamp=%",),
         )
-        doc2_metadata = cursor.fetchone()
+        doc2_info = cursor.fetchone()
 
         # Check display name for doc3 (duplicate URI test)
         cursor.execute(
-            "SELECT source_uri, display_name FROM test_document_metadata WHERE source_uri LIKE :1 ORDER BY source_uri",
+            "select distinct source_uri, display_name from test_document_chunks where source_uri like :1 order by source_uri",
             ("test://project/doc3.xlsx?timestamp=%",),
         )
-        doc3_metadata = cursor.fetchone()
+        doc3_info = cursor.fetchone()
 
-        print(f"Doc1 metadata: {doc1_metadata}")
-        print(f"Doc2 metadata: {doc2_metadata}")
-        print(f"Doc3 metadata: {doc3_metadata}")
+        print(f"Doc1 info: {doc1_info}")
+        print(f"Doc2 info: {doc2_info}")
+        print(f"Doc3 info: {doc3_info}")
 
         # Verify display names were updated
-        assert doc1_metadata[1] == "Document 1 - Updated Name", (
-            f"Expected updated display name for doc1, got {doc1_metadata[1]}"
+        assert doc1_info[1] == "Document 1 - Updated Name", (
+            f"Expected updated display name for doc1, got {doc1_info[1]}"
         )
-        assert doc2_metadata[1] == "Document 2 - Updated Name", (
-            f"Expected updated display name for doc2, got {doc2_metadata[1]}"
+        assert doc2_info[1] == "Document 2 - Updated Name", (
+            f"Expected updated display name for doc2, got {doc2_info[1]}"
         )
 
         # DUPLICATE URI BUG TEST: Verify doc3 has the FIRST display name, not the duplicate
-        assert doc3_metadata[1] == "Document 3", (
-            f"Expected 'Document 3' (first occurrence), got '{doc3_metadata[1]}' - "
+        assert doc3_info[1] == "Document 3", (
+            f"Expected 'Document 3' (first occurrence), got '{doc3_info[1]}' - "
             f"this indicates the duplicate overwrote the original display name"
         )
 
@@ -1065,12 +978,12 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
 def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test for orphaned data bug at process_changed_documents level: when document processing fails at a later stage,
-    ensure no partial data is left in ANY table (document_text, document_metadata, document_chunks).
+    ensure no partial data is left in ANY table (document_text, document_chunks).
 
     This test uses a valid text file but corrupts the config to cause chunking to fail after earlier steps succeed.
     This validates that process_changed_documents properly cleans up orphaned data from earlier pipeline stages.
     """
-    # Create a valid text file (will succeed through parsing, text insertion, and metadata generation)
+    # Create a valid text file (will succeed through parsing, text insertion, and chunking)
     text_file = tmp_path / "valid.txt"
     text_file.write_text("This is a valid text document that will process successfully until chunking fails.")
 
@@ -1109,7 +1022,7 @@ def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema
 
     with snowflake_conn.cursor() as cursor:
         # Check all tables - should be completely empty for this source_uri
-        tables_to_check = ["test_document_metadata", "test_document_text", "test_document_chunks"]
+        tables_to_check = ["test_document_text", "test_document_chunks"]
 
         for table in tables_to_check:
             cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE source_uri = :1", (source_uri,))
@@ -1123,7 +1036,7 @@ def test_process_changed_documents_orphaned_data_bug(snowflake_conn, test_schema
 def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test delete_document function - should selectively remove document data based on flags and config hashes.
-    Tests conditional deletion from: document_text, document_metadata, document_chunks
+    Tests conditional deletion from: document_text, document_chunks
     """
     # === SETUP: Create test document with data in all tables ===
     test_uri = "test://delete/test_doc.txt?timestamp=1"
@@ -1134,22 +1047,10 @@ def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
         # Insert into document_text
         set_document_text(cursor=cursor, source_uri=test_uri, text=test_content, table_prefix="test_")
 
-        # Insert into document_metadata with specific config hash
-        cursor.execute(
-            "INSERT INTO test_document_metadata (source_uri, display_name, metadata_config_hash, generated_metadata) VALUES (:1, :2, :3, :4)",
-            (test_uri, test_display_name, "meta_hash_v1", f"Generated metadata for {test_display_name}"),
-        )
-
         # Insert into document_chunks with specific config hash
         cursor.execute(
             "INSERT INTO test_document_chunks (source_uri, chunk_config_hash, document_chunk) VALUES (:1, :2, :3)",
             (test_uri, "chunk_hash_v1", f"Test chunk content for {test_display_name}"),
-        )
-
-        # Also insert additional entries with different hashes to test selectivity
-        cursor.execute(
-            "INSERT INTO test_document_metadata (source_uri, display_name, metadata_config_hash, generated_metadata) VALUES (:1, :2, :3, :4)",
-            (test_uri, test_display_name, "meta_hash_v2", "Different metadata version"),
         )
 
         cursor.execute(
@@ -1161,9 +1062,6 @@ def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
     with snowflake_conn.cursor() as cursor:
         cursor.execute("SELECT COUNT(*) FROM test_document_text WHERE source_uri = :1", (test_uri,))
         assert cursor.fetchone()[0] == 1, "Should have 1 entry in document_text"
-
-        cursor.execute("SELECT COUNT(*) FROM test_document_metadata WHERE source_uri = :1", (test_uri,))
-        assert cursor.fetchone()[0] == 2, "Should have 2 entries in document_metadata (different hashes)"
 
         cursor.execute("SELECT COUNT(*) FROM test_document_chunks WHERE source_uri = :1", (test_uri,))
         assert cursor.fetchone()[0] == 2, "Should have 2 entries in document_chunks (different hashes)"
@@ -1181,31 +1079,13 @@ def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
         cursor.execute("SELECT COUNT(*) FROM test_document_text WHERE source_uri = :1", (test_uri,))
         assert cursor.fetchone()[0] == 0, "document_text should be deleted when source_uri_new=True"
 
-        cursor.execute("SELECT COUNT(*) FROM test_document_metadata WHERE source_uri = :1", (test_uri,))
-        assert cursor.fetchone()[0] == 2, "document_metadata should remain unchanged"
-
         cursor.execute("SELECT COUNT(*) FROM test_document_chunks WHERE source_uri = :1", (test_uri,))
         assert cursor.fetchone()[0] == 2, "document_chunks should remain unchanged"
 
-    # === TEST 2: Delete specific metadata config hash ===
+    # === TEST 2: Delete specific chunk config hash ===
     with snowflake_conn.cursor() as cursor:
-        delete_document(
-            cursor,
-            test_uri,
-            table_prefix="test_",
-            metadata_config_hash="meta_hash_v1",
-        )
-
-    with snowflake_conn.cursor() as cursor:
-        cursor.execute("SELECT COUNT(*) FROM test_document_metadata WHERE source_uri = :1", (test_uri,))
-        assert cursor.fetchone()[0] == 1, "Should have 1 metadata entry remaining"
-
-        cursor.execute("SELECT metadata_config_hash FROM test_document_metadata WHERE source_uri = :1", (test_uri,))
-        remaining_hash = cursor.fetchone()[0]
-        assert remaining_hash == "meta_hash_v2", "Should keep the v2 hash entry"
-
-    # === TEST 3: Delete specific chunk config hash ===
-    with snowflake_conn.cursor() as cursor:
+        # Re-add document_text for comprehensive test
+        set_document_text(cursor=cursor, source_uri=test_uri, text=test_content, table_prefix="test_")
         delete_document(
             cursor,
             test_uri,
@@ -1220,31 +1100,6 @@ def test_delete_document(snowflake_conn, test_schema, test_config, tmp_path):
         cursor.execute("SELECT chunk_config_hash FROM test_document_chunks WHERE source_uri = :1", (test_uri,))
         remaining_hash = cursor.fetchone()[0]
         assert remaining_hash == "chunk_hash_v2", "Should keep the v2 hash entry"
-
-    # === TEST 4: Combined deletion (metadata + chunks) ===
-    # Re-add document_text for comprehensive test
-    with snowflake_conn.cursor() as cursor:
-        set_document_text(cursor=cursor, source_uri=test_uri, text=test_content, table_prefix="test_")
-
-        delete_document(
-            cursor,
-            test_uri,
-            table_prefix="test_",
-            source_uri_new=True,
-            metadata_config_hash="meta_hash_v2",
-            chunk_config_hash="chunk_hash_v2",
-        )
-
-    # === VERIFY FINAL STATE ===
-    with snowflake_conn.cursor() as cursor:
-        cursor.execute("SELECT COUNT(*) FROM test_document_text WHERE source_uri = :1", (test_uri,))
-        assert cursor.fetchone()[0] == 0, "document_text should be deleted"
-
-        cursor.execute("SELECT COUNT(*) FROM test_document_metadata WHERE source_uri = :1", (test_uri,))
-        assert cursor.fetchone()[0] == 0, "document_metadata should be fully deleted"
-
-        cursor.execute("SELECT COUNT(*) FROM test_document_chunks WHERE source_uri = :1", (test_uri,))
-        assert cursor.fetchone()[0] == 0, "document_chunks should be fully deleted"
 
     print("✅ delete_document test passed - selective deletion by config hash works correctly!")
 
@@ -1394,11 +1249,11 @@ def test_stage_document_edge_cases(snowflake_conn, test_schema, tmp_path):
 def test_refresh_search_services(snowflake_conn, test_schema, test_config, tmp_path):
     """
     Test refresh_search_services function - should refresh both Cortex search services with latest data.
-    Tests the two hardcoded search services: search_metadata and search_contents.
+    Tests the search service search_contents
     Verifies that data_timestamp gets updated after refresh.
     """
     # The two search services from setup_05_cortex_search_agent.sql
-    search_services = ["test_search_metadata", "test_search_contents"]
+    search_services = ["test_search_contents"]
 
     # === SETUP: Add some test data that should be picked up by search services ===
     # Create test documents using the new URI format with query parameters
@@ -1418,19 +1273,6 @@ def test_refresh_search_services(snowflake_conn, test_schema, test_config, tmp_p
                 source_uri=source_uri,
                 text=f"Content for {source_uri}",
                 table_prefix="test_",
-            )
-
-            # Insert dummy metadata directly for search_metadata service
-            cursor.execute(
-                """
-                INSERT INTO test_document_metadata (source_uri, display_name, generated_metadata)
-                VALUES (:1, :2, :3)
-                """,
-                (
-                    source_uri,
-                    display_name,
-                    f"Dummy metadata for {display_name}. This is test data for search service validation.",
-                ),
             )
 
             # Insert dummy chunks directly for search_contents service
@@ -1483,18 +1325,11 @@ def test_refresh_search_services(snowflake_conn, test_schema, test_config, tmp_p
     # === VERIFY DATA WAS INSERTED CORRECTLY ===
     print("\n=== VERIFYING TABLE DATA ===")
     with snowflake_conn.cursor() as cursor:
-        # Check document_metadata table
-        cursor.execute("SELECT COUNT(*), MIN(LENGTH(generated_metadata)) FROM test_document_metadata")
-        meta_count, min_meta_len = cursor.fetchone()
-        print(f"document_metadata: {meta_count} rows, min metadata length: {min_meta_len}")
-
         # Check document_chunks table
         cursor.execute("SELECT COUNT(*), MIN(LENGTH(document_chunk)) FROM test_document_chunks")
         chunk_count, min_chunk_len = cursor.fetchone()
         print(f"document_chunks: {chunk_count} rows, min chunk length: {min_chunk_len}")
 
-        if meta_count == 0:
-            print("⚠️ No data in document_metadata - search_metadata service may fail")
         if chunk_count == 0:
             print("⚠️ No data in document_chunks - search_contents service may fail")
 

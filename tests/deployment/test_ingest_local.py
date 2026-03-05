@@ -15,11 +15,6 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
     """
     mock_logger = MagicMock()
 
-    # Override metadata prompt to test filename awareness
-    test_config["metadata_prompt"] = (
-        "Look at the filename and return this string exactly: File extension: [extension without leading period]"
-    )
-
     # Create a local documents directory
     docs_dir = tmp_path / "local_kitchen_sink"
     docs_dir.mkdir()
@@ -191,9 +186,9 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
     # === VERIFY FINAL STATE ===
 
     with snowflake_conn.cursor() as cursor:
-        # Check document_metadata table
+        # Check document_text table
         cursor.execute(
-            "SELECT source_uri FROM test_document_metadata WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
+            "SELECT source_uri FROM test_document_text WHERE source_uri LIKE 'file://local/%' ORDER BY source_uri"
         )
         db_uris = [row[0] for row in cursor.fetchall()]
 
@@ -268,17 +263,6 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
         cursor.execute("SELECT document_text FROM test_document_text WHERE source_uri = :1", (success_txt_uri,))
         updated_content = cursor.fetchone()[0]
         assert "UPDATED content" in updated_content, "Updated file content not found in database"
-
-        # Verify metadata generation worked (filename awareness)
-        cursor.execute(
-            "SELECT generated_metadata FROM test_document_metadata WHERE source_uri = :1", (success_txt_uri,)
-        )
-        metadata_result = cursor.fetchone()
-        if metadata_result:
-            metadata_content = metadata_result[0]
-            assert "File extension: txt" in metadata_content, (
-                f"Expected filename awareness in metadata, got: {metadata_content[:200]}..."
-            )
 
     print("Kitchen sink test completed successfully - verified adds, updates, deletes, and error handling!")
 
