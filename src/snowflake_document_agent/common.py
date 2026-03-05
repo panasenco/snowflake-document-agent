@@ -321,31 +321,33 @@ def chunk_document(
     chunk_overlap: int,
 ) -> None:
     """Splits documents into overlapping chunks for easier search."""
+    file_name = display_name.split("/")[-1]
     cursor.execute(
         f"""
         insert into {table_prefix}document_chunks (
             source_uri,
             display_name,
             chunk_config_hash,
-            chunk_index,
+            chunk_number,
             document_chunk
         )
         select
             :1 as source_uri,
             :2 as display_name,
-            :3 as chunk_config_hash,
-            chunks.index as chunk_index,
-            chunks.value as document_chunk
+            :4 as chunk_config_hash,
+            chunks.index + 1 as chunk_number,
+            :3 || char(10) || (chunks.index + 1)::string || '/' || (max(chunks.index) over () + 1)::string
+                || char(10) || char(10) || chunks.value as document_chunk
         from {table_prefix}document_text as document_text,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             document_text.document_text,
             'none',
-            :4,
-            :5
+            :5,
+            :6
         )) as chunks
         where document_text.source_uri = :1
         """,
-        (source_uri, display_name, chunk_config_hash, chunk_size, chunk_overlap),
+        (source_uri, display_name, file_name, chunk_config_hash, chunk_size, chunk_overlap),
     )
 
 
