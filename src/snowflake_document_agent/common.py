@@ -321,7 +321,6 @@ def chunk_document(
     chunk_overlap: int,
 ) -> None:
     """Splits documents into overlapping chunks for easier search."""
-    file_name = display_name.split("/")[-1]
     cursor.execute(
         f"""
         insert into {table_prefix}document_chunks (
@@ -334,20 +333,20 @@ def chunk_document(
         select
             :1 as source_uri,
             :2 as display_name,
-            :4 as chunk_config_hash,
+            :3 as chunk_config_hash,
             chunks.index + 1 as chunk_number,
-            :3 || char(10) || (chunks.index + 1)::string || '/' || (max(chunks.index) over () + 1)::string
+            :2 || char(10) || (chunks.index + 1)::string || '/' || (max(chunks.index) over () + 1)::string
                 || char(10) || char(10) || chunks.value as document_chunk
         from {table_prefix}document_text as document_text,
         lateral flatten( input => snowflake.cortex.split_text_recursive_character(
             document_text.document_text,
             'none',
-            :5,
-            :6
+            :4,
+            :5
         )) as chunks
         where document_text.source_uri = :1
         """,
-        (source_uri, display_name, file_name, chunk_config_hash, chunk_size, chunk_overlap),
+        (source_uri, display_name, chunk_config_hash, chunk_size, chunk_overlap),
     )
 
 
@@ -417,13 +416,14 @@ def process_document(
     """Process a single document end-to-end. Returns a (processed, skipped, failed) count tuple."""
     name = f"{source_uri} ({display_name})"  # Convenient shorthand for document name
     processed = False
-    local_path = downloader(source_uri)
     source_uri_new = False
     chunk_config_new = False
     with configured_connection.cursor() as cursor:
         # Only reload/reparse if the uri is not already present in the document_text table
         cursor.execute(f"select count(*) from {table_prefix}document_text where source_uri = :1", (source_uri,))
         if cursor.fetchone()[0] == 0:
+            logger.info(f"Downloading {source_uri}...")
+            local_path = downloader(source_uri)
             source_uri_new = True
             try:
                 document_type = local_path.suffix.removeprefix(".").lower()
@@ -439,12 +439,14 @@ def process_document(
                         )
                     case "htm" | "html":
                         # The HTML files are often Word exports with a bunch of fluff, so clean before uploading
-                        logger.info(f"Cleaning and uploading contents of {name}...")
+                        logger.info(f"Cleaning contents of HTML file {name}")
+                        cleaned_html = clean_html(local_path)
+                        logger.info(f"Uploading cleaned HTML contents of {name} directly...")
                         set_document_text(
                             cursor,
                             table_prefix=table_prefix,
                             source_uri=source_uri,
-                            text=clean_html(local_path),
+                            text=cleaned_html,
                         )
                     case "xls" | "xlsx" | "xlsm":
                         # Convert Excel to HTML
@@ -461,7 +463,7 @@ def process_document(
                         # Convert doc format (Word 1997) to text
                         logger.info(f"Converting doc (Word 1997) document {name} to text...")
                         document_text = doc_to_text(local_path)
-                        logger.info(f"Uploading converted text contents of {name} directly...")
+                        logger.info(f"Uploading parsed text contents of {name} directly...")
                         set_document_text(
                             cursor,
                             table_prefix=table_prefix,
