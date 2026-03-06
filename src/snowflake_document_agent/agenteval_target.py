@@ -51,27 +51,47 @@ class SnowflakeAgentTarget(BaseTarget):
         if assert_hostname:
             self.session.mount("https://", HostnameAdapter(assert_hostname=assert_hostname))
 
+        # Initialize conversation thread state for multi-turn support
+        self.thread_id = None
+        self.parent_message_id = 0
+
     def run(self, prompt: str, /) -> dict[str, Any]:
         """Run an agent and get its response from the Snowflake Cortex REST API."""
+        # Build request payload with conversation threading support
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                },
+            ],
+            "stream": False,
+        }
+
+        # Add threading parameters if this is a continuing conversation
+        if self.thread_id is not None:
+            payload["thread_id"] = self.thread_id
+            payload["parent_message_id"] = self.parent_message_id
+
         response = self.session.post(
             url=f"{self.agent_url}:run",
-            json={
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": prompt,
-                            },
-                        ],
-                    },
-                ],
-                "stream": False,
-            },
+            json=payload,
         )
         response.raise_for_status()
-        return response.json()
+        response_data = response.json()
+
+        # Update conversation state for next turn
+        if "thread_id" in response_data:
+            self.thread_id = response_data["thread_id"]
+        if "message_id" in response_data:
+            self.parent_message_id = response_data["message_id"]
+
+        return response_data
 
     def invoke(self, prompt: str) -> TargetResponse:
         response_payload = self.run(prompt)
