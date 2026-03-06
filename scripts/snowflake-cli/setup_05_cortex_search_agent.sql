@@ -27,12 +27,13 @@ create agent if not exists snowflake_intelligence.agents.<% ctx.env.agent_name %
         type: "cortex_search"
         name: "search_document_contents"
         description: >
-          The parsed document contents were split into chunks for manageable LLM ingestion.
-          Use this tool to search for document content chunks that match the keywords in the query.
-          Each chunk will be in the following format:
+          Search Pacific Life operations documents (procedures, forms, product details, and guidelines).
+          Uses hybrid semantic and keyword matching - use natural-language phrases, not just single keywords.
+          A single document may span multiple chunks; search with varied queries to gather all relevant chunks.
+          Each result is formatted as:
           ```
           Document filename
-          Chunk number (starting with 1) / Total chunks in document
+          Chunk N / Total chunks in document
 
           Chunk content
           ```
