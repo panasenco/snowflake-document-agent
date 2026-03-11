@@ -199,7 +199,8 @@ def clean_html(local_path: Path) -> str:
         raise RuntimeError(f"Could not detect best encoding for {local_path}")
     html_content = str(detected)
 
-    html_doc = lxml.html.fromstring(html_content)
+    parser = lxml.html.HTMLParser(remove_blank_text=True)
+    html_doc = lxml.html.fromstring(html_content, parser=parser)
     html_cleaner = lxml.html.clean.Cleaner(
         scripts=True,
         javascript=True,
@@ -239,11 +240,17 @@ def clean_html(local_path: Path) -> str:
             if parent is not None:
                 parent.remove(element)
 
+    # Normalize whitespace in text nodes and clear tails so pretty_print can add fresh formatting
+    for element in cleaned_doc.iter():
+        if element.text:
+            element.text = re.sub(r"\s+", " ", element.text).strip()
+        if element.tail and element.tail.strip():
+            # Tail has real content (e.g., text after <br>) — normalize but keep it
+            element.tail = re.sub(r"\s+", " ", element.tail).strip()
+        else:
+            element.tail = None
+
     cleaned_html = lxml.html.tostring(cleaned_doc, encoding="unicode", pretty_print=True)
-    # Strip out carriage returns, repeating newlines, and multiple spaces
-    cleaned_html = cleaned_html.replace("\r\n", "\n")
-    cleaned_html = re.sub(r" {2,}", " ", cleaned_html)
-    cleaned_html = re.sub(r"\n{2,}", "\n", cleaned_html)
     return cleaned_html
 
 
