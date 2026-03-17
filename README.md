@@ -1,5 +1,5 @@
-# snowflake-document-agent
-Snowflake agent that enables you to chat with your documents
+# snowdoc
+CLI to incrementally load documents into Snowflake for use with Snowflake Intelligence agents
 
 Building on the foundation of Doneyli De Jesus' [snowflake-intelligent-rag-chatbot](https://github.com/sfc-gh-ddejesus/snowflake-intelligent-rag-chatbot).
 Adding a more production-grade pipeline for ingesting new documents incrementally.
@@ -10,8 +10,8 @@ Adding a more production-grade pipeline for ingesting new documents incrementall
 
 First, clone this repository:
 ```sh
-git clone https://github.com/panasenco/snowflake-document-agent.git
-cd snowflake-document-agent
+git clone https://github.com/panasenco/snowdoc.git
+cd snowdoc
 ```
 
 Then follow one of the below instructions:
@@ -35,11 +35,11 @@ uv sync
 If you're in an environment where `uv` doesn't work well, you can use `pyenv` instead:
 
 ```sh
-pyenv virtualenv snowflake-document-agent
-~/.pyenv/versions/snowflake-document-agent/bin/pip install -e .
+pyenv virtualenv snowdoc
+~/.pyenv/versions/snowdoc/bin/pip install -e .
 ```
 
-If you'd like to develop `snowflake-document-agent`, install the dev dependencies with `pip install -e .[dev]`.
+If you'd like to develop `snowdoc`, install the dev dependencies with `pip install -e .[dev]`.
 
 </details>
 
@@ -72,7 +72,7 @@ Note that `uv` installs packages in the folder `.venv` in your workspace by defa
 #### Alternative Python package registries
 
 If your corporate environment blocks the Python Package index `pypi.org`, you won't be able to take advantage of the lock file `uv.lock`.
-In that case, rather than bothering with configuring `uv` to use the corporate registry, just do something like `/usr/local/bin/python3 -m pip install --group dev --editable /workspaces/snowflake-document-agent` and let the (hopefully sane) `pip` configuration in your corporate Docker image take care of things.
+In that case, rather than bothering with configuring `uv` to use the corporate registry, just do something like `/usr/local/bin/python3 -m pip install --group dev --editable /workspaces/snowdoc` and let the (hopefully sane) `pip` configuration in your corporate Docker image take care of things.
 
 #### Line ending issues
 
@@ -112,7 +112,7 @@ nix develop
 Run this command to upload some documents to Snowflake and to see what changes are being synchronized:
 
 ```sh
-ingest-local --snowflake-connection default --verbose path/to/your/documents
+snowdoc ingest-local --snowflake-connection default --verbose path/to/your/documents
 ```
 
 ### Ingest OpenText files
@@ -124,7 +124,7 @@ Replace `12345678` in the below command with your real OpenText node ID that sho
 uploaded to Snowflake:
 
 ```sh
-ingest-opentext --snowflake-connection default --verbose 12345678
+snowdoc ingest-opentext --snowflake-connection default --verbose 12345678
 ```
 
 ### Ingestion notes

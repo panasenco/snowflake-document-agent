@@ -525,7 +525,7 @@ def clear_stage(configured_connection: SnowflakeConnection, /, *, table_prefix: 
 
 
 def refresh_search_services(configured_connection: SnowflakeConnection, /, *, table_prefix: str) -> None:
-    """Make sure the snowflake-document-agent Cortex search services have the latest data.
+    """Make sure the snowdoc Cortex search services have the latest data.
     Accepts an already-configured (role, warehouse, schema set) connection object.
     """
     search_services = ["search_contents"]

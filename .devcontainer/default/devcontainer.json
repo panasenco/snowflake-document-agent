@@ -1,5 +1,5 @@
 {
-    "name": "Snowflake Document Agent",
+    "name": "snowdoc",
     "image": "mcr.microsoft.com/devcontainers/python:3.13-trixie",
     "containerEnv": {
         "UV_PROJECT_ENVIRONMENT": "/home/vscode/.cache/uv-venv"
@@ -19,7 +19,7 @@
             "type": "bind"
         },
         {
-            "source": "snowflake-document-agent-cache",
+            "source": "snowdoc-cache",
             "target": "/home/vscode/.cache",
             "type": "volume"
         }

@@ -3,8 +3,8 @@ import shutil
 import time
 from unittest.mock import MagicMock, patch
 
-from snowflake_document_agent.ingest_local import get_local_documents, local_downloader
-from snowflake_document_agent.common import process_changed_documents
+from snowdoc.ingest_local import get_local_documents, local_downloader
+from snowdoc.common import process_changed_documents
 
 
 def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_config, tmp_path):
@@ -77,7 +77,7 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
     initial_sources_for_processing = get_local_documents(docs_dir, "local")
 
     # Mock refresh_search_services to avoid long execution time
-    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+    with patch("snowdoc.common.refresh_search_services") as mock_refresh:
         # Process initial documents
         process_changed_documents(
             sources=initial_sources_for_processing,
@@ -148,7 +148,7 @@ def test_process_local_documents_kitchen_sink(snowflake_conn, test_schema, test_
     # === PROCESS CHANGED DOCUMENTS ===
 
     # Mock refresh_search_services to avoid long execution time
-    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+    with patch("snowdoc.common.refresh_search_services") as mock_refresh:
         process_changed_documents(
             sources=updated_sources,
             connection=snowflake_conn,
@@ -274,7 +274,7 @@ def test_process_changed_documents_no_changes(snowflake_conn, test_schema, test_
     mock_logger = MagicMock()
 
     # Mock refresh_search_services to verify it's not called
-    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+    with patch("snowdoc.common.refresh_search_services") as mock_refresh:
         # Create a local documents directory with one file
         docs_dir = tmp_path / "no_changes_test"
         docs_dir.mkdir()

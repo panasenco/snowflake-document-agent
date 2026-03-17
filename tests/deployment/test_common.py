@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from snowflake.connector import DictCursor
 
-from snowflake_document_agent.common import (
+from snowdoc.common import (
     stage_document,
     set_document_text,
     parse_document,
@@ -729,7 +729,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     # Mock refresh_search_services to avoid long execution time
     print("Phase 1: delete_missing = False (default)")
 
-    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+    with patch("snowdoc.common.refresh_search_services") as mock_refresh:
         phase1_processed, phase1_skipped, phase1_failed = process_changed_documents(
             current_sources,
             connection=snowflake_conn,
@@ -772,7 +772,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     print(f"DEBUG: old_doc in phase1_docs = {old_doc_uri in phase1_docs}")
     print("Phase 2: delete_missing = True")
 
-    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+    with patch("snowdoc.common.refresh_search_services") as mock_refresh:
         phase2_processed, phase2_skipped, phase2_failed = process_changed_documents(
             current_sources,  # Same sources as before
             connection=snowflake_conn,
@@ -854,7 +854,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     pre_broken_docs = get_snowflake_documents(snowflake_conn, prefix=prefix, table_prefix="test_")
     assert len(pre_broken_docs) == 5, f"Pre-broken test setup: Expected 5 documents, got {len(pre_broken_docs)}"
 
-    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh:
+    with patch("snowdoc.common.refresh_search_services") as mock_refresh:
         # This should process some docs but fail before completion, preventing deletion
         broken_sources = BrokenIterator(current_sources, break_after=2)
         phase3_processed, phase3_skipped, phase3_failed = process_changed_documents(
@@ -945,7 +945,7 @@ def test_process_changed_documents_flow(snowflake_conn, test_schema, test_config
     # === TEST NO CHANGES: Process same sources again ===
     mock_logger = MagicMock()
 
-    with patch("snowflake_document_agent.common.refresh_search_services") as mock_refresh_no_changes:
+    with patch("snowdoc.common.refresh_search_services") as mock_refresh_no_changes:
         no_change_processed, no_change_skipped, no_change_failed = process_changed_documents(
             current_sources,  # Same sources as before - no changes
             connection=snowflake_conn,
