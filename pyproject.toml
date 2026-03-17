@@ -28,8 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-ingest-local = "snowflake_document_agent.ingest_local:main"
-ingest-opentext = "snowflake_document_agent.ingest_opentext:main"
+snowdoc = "snowflake_document_agent.cli:main"
 
 [dependency-groups]
 dev = [
