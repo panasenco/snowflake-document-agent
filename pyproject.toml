@@ -1,6 +1,6 @@
 [project]
 name = "snowflake-document-agent"
-version = "0.6.0"
+version = "0.7.0"
 description = "Python ELT processes to incrementally load document files into Snowflake Document Agent"
 readme = "README.md"
 requires-python = ">=3.12"
