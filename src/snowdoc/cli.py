@@ -1,4 +1,5 @@
 import argparse
+import csv
 import logging
 from logging import getLogger, Logger
 from pathlib import Path
@@ -48,6 +49,12 @@ def main() -> None:
         action="count",
         default=0,
     )
+    common.add_argument(
+        "-o",
+        "--output-csv",
+        default=None,
+        help="Path to write a CSV file of document changes. If omitted, no CSV is written.",
+    )
 
     parser = argparse.ArgumentParser(
         prog="snowdoc",
@@ -92,7 +99,7 @@ def main() -> None:
     if args.command == "ingest-local":
         root_path = Path(args.root_dir)
         logger.info(f"Getting local documents in {root_path}...")
-        process_changed_documents(
+        changes = process_changed_documents(
             get_local_documents(root_path=root_path, source_name=args.source_name),
             downloader=local_downloader,
             prefix=f"file://{args.source_name}",
@@ -101,12 +108,21 @@ def main() -> None:
     elif args.command == "ingest-opentext":
         opentext_downloader = OpenTextDownloader(logger=logger)
         logger.info(f"Getting OpenText documents in root nodes {args.node_ids}...")
-        process_changed_documents(
+        changes = process_changed_documents(
             opentext_downloader.get_opentext_documents(args.node_ids, prefix=args.prefix),
             downloader=opentext_downloader,
             prefix=args.prefix,
             **pcd_params,
         )
+
+    if args.output_csv:
+        output_path = Path(args.output_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["source_uri_base", "state", "core_changes", "metadata_changes"])
+            writer.writerows(changes)
+        logger.info(f"Wrote {len(changes)} changes to {args.output_csv}")
 
 
 if __name__ == "__main__":
