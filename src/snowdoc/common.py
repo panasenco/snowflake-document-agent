@@ -4,7 +4,6 @@ from hashlib import sha1
 import json
 import logging
 from logging import getLogger, Logger
-from operator import add
 import os
 from pathlib import Path
 import re
@@ -28,6 +27,23 @@ snowflake.connector.paramstyle = "numeric"
 ALL_TABLES = ["document_text", "document_chunks"]
 # See https://docs.snowflake.com/en/user-guide/snowflake-cortex/parse-document#input-requirements
 CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff", "tif", "htm", "html", "txt"}
+
+
+def format_dict_changes(old: dict | None, new: dict | None) -> str:
+    """Diff two dicts and return a semicolon-separated string of quoted changes.
+    E.g. 'v: "3" -> "4"; foo: "xyz" -> "abc"'.
+    Returns an empty string if there are no changes.
+    None is treated as an empty dict.
+    """
+    old = old or {}
+    new = new or {}
+    all_keys = sorted(set(old) | set(new))
+    parts = []
+    for key in all_keys:
+        old_val, new_val = old.get(key), new.get(key)
+        if old_val != new_val:
+            parts.append(f'{key}: "{old_val}" -> "{new_val}"')
+    return "; ".join(parts)
 
 
 class ErrorCaptureHandler(logging.Handler):
@@ -367,8 +383,11 @@ def process_document(
     update_display_name: bool = False,
     logger: Logger = getLogger(),
     document_metadata_json: str | None = None,
-) -> tuple[int, int, int]:
-    """Process a single document end-to-end. Returns a (processed, skipped, failed) count tuple."""
+) -> tuple[str, str, str, str] | None:
+    """Process a single document end-to-end.
+    Returns a (source_uri_base, state, core_changes, metadata_changes) tuple, or None if skipped.
+    """
+    source_uri_base = source_uri.split("?")[0]
     name = f"{source_uri} ({display_name})"  # Convenient shorthand for document name
     processed = False
     source_uri_new = False
@@ -464,7 +483,7 @@ def process_document(
                     table_prefix=table_prefix,
                     source_uri_new=True,
                 )
-                return (0, 0, 1)
+                raise
         # Only recompute the chunks if the uri+config hash is not already present in the document_chunks table
         cursor.execute(
             f"""
@@ -497,7 +516,7 @@ def process_document(
                     source_uri_new=source_uri_new,
                     chunk_config_hash=chunk_config_hash if chunk_config_new else None,
                 )
-                return (0, 0, 1)
+                raise
         elif update_display_name and current_chunk_row[0] != display_name:
             # Update just the display name
             logger.info(f"Updating the display name of {source_uri}: {current_chunk_row[0]} -> {display_name}...")
@@ -523,9 +542,10 @@ def process_document(
                 },
                 table_prefix=table_prefix,
             )
-            return (1, 0, 0)
+            state = "new" if source_uri_new else "processed"
+            return (source_uri_base, state, "", "")
     logger.debug(f"No changes detected in {name} - skipped processing...")
-    return (0, 1, 0)
+    return None
 
 
 def clear_stage(configured_connection: SnowflakeConnection, /, *, table_prefix: str) -> None:
@@ -561,7 +581,7 @@ def process_changed_documents(
     delete_missing: bool = False,
     update_display_names: bool = False,
     logger: Logger = getLogger(),
-) -> tuple[int, int, int]:
+) -> list[tuple[str, str, str, str]]:
     """Process just the documents that have changed since the last ingestion into Snowflake.
     Accepts an iterable (list or generator) of (source_uri, display_name, metadata) tuples.
     Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
@@ -570,7 +590,7 @@ def process_changed_documents(
     Deletes old versions of successfully ingested documents, if any.
     If delete_missing is set, deletes matching documents that are only in Snowflake and are no longer in the source.
     If update_display_names is set, updates the display names of otherwise unchanged documents.
-    Returns a (processed, skipped, failed) count tuple.
+    Returns a list of (source_uri_base, state, core_changes, metadata_changes) change tuples.
     """
     sources_iterator = iter(sources)
     if config is None:
@@ -582,7 +602,8 @@ def process_changed_documents(
     # Ensure the Snowflake connection has the correct database/schema/warehouse
     configured_connection = configure_connection(connection, config)
     source_uris = set()
-    n_processed, n_skipped, n_failed = 0, 0, 0
+    changes: list[tuple[str, str, str, str]] = []
+    n_skipped, n_failed = 0, 0
     process_sources = True
     all_sources_fetched = False
     clear_stage(configured_connection, table_prefix=table_prefix)
@@ -640,7 +661,10 @@ def process_changed_documents(
                     del future_uris[future]
                     try:
                         result = future.result()
-                        n_processed, n_skipped, n_failed = tuple(map(add, (n_processed, n_skipped, n_failed), result))
+                        if result is not None:
+                            changes.append(result)
+                        else:
+                            n_skipped += 1
                     except Exception:
                         n_failed += 1
                         logger.exception(
@@ -665,14 +689,16 @@ def process_changed_documents(
                     {table_name: ("source_uri like :1", source_pattern) for table_name in ALL_TABLES},
                     table_prefix=table_prefix,
                 )
+                changes.append((source_uri.split("?")[0], "deleted", "", ""))
     # Make sure Cortex search services reflect the changes
-    if deleted_uris or n_processed > 0:
+    if deleted_uris or len(changes) > 0:
         logger.info("Finished processing documents - refreshing search services...")
         refresh_search_services(configured_connection, table_prefix=table_prefix)
         logger.info("Search services refreshed - all done!")
     else:
         logger.info("No documents processed or deleted.")
     # Summarize
+    n_processed = len(changes)
     error_capture_handlers = [handler for handler in logger.handlers if isinstance(handler, ErrorCaptureHandler)]
     if len(error_capture_handlers) > 0:
         print("=== ERRORS ===")
@@ -687,4 +713,4 @@ def process_changed_documents(
                 print("------")
     print("=== SUMMARY ===")
     print(f"Processed: {n_processed}; Skipped: {n_skipped}; Failed: {n_failed}.")
-    return (n_processed, n_skipped, n_failed)
+    return changes

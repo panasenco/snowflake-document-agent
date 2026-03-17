@@ -4,10 +4,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from snowdoc.common import (
+    clean_html,
+    doc_to_text,
     docx_to_html,
     excel_to_html,
-    doc_to_text,
-    clean_html,
+    format_dict_changes,
     process_changed_documents,
 )
 
@@ -194,11 +195,11 @@ def test_process_changed_documents_handles_none_sentinel():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_connection),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=(1, 0, 0)),
+        patch("snowdoc.common.process_document", return_value=("test://unit/success.txt", "new", "", "")),
         patch("snowdoc.common.refresh_search_services"),
     ):
         # Execute - Process the generator that includes error sentinels
-        processed, skipped, failed = process_changed_documents(
+        changes = process_changed_documents(
             error_yielding_generator(),
             connection=mock_connection,
             downloader=mock_downloader,
@@ -211,12 +212,10 @@ def test_process_changed_documents_handles_none_sentinel():
             max_workers=1,
         )
 
-    # Verify - Should have processed 2 successful docs and failed on 2 error sentinels
-    assert processed == 2, f"Expected 2 processed documents, got {processed}"
-    assert skipped == 0, f"Expected 0 skipped documents, got {skipped}"
-    assert failed == 2, f"Expected 2 failed (from None sentinels), got {failed}"
+    # Verify - Should have processed 2 successful docs; sentinels should not appear in changes
+    assert len(changes) == 2, f"Expected 2 changes, got {len(changes)}"
 
-    print("✅ Unit test passed - (None, None, None) yields should increment failed counter!")
+    print("✅ Unit test passed - (None, None, None) yields should not appear in changes!")
 
 
 def test_process_changed_documents_passes_metadata_to_process_document():
@@ -239,7 +238,7 @@ def test_process_changed_documents_passes_metadata_to_process_document():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_connection),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=(1, 0, 0)) as mock_process_doc,
+        patch("snowdoc.common.process_document", return_value=("test://unit/doc", "new", "", "")) as mock_process_doc,
         patch("snowdoc.common.refresh_search_services"),
     ):
         process_changed_documents(
@@ -267,3 +266,163 @@ def test_process_changed_documents_passes_metadata_to_process_document():
     # Verify the second call had None metadata
     second_call_args = mock_process_doc.call_args_list[1]
     assert second_call_args[0][2] == "No Metadata"  # display_name
+
+
+# ============================================================
+# Document changes return type tests (TDD red phase)
+# ============================================================
+# These tests define the expected interface for the planned change where
+# process_changed_documents returns a list of (source_uri_base, state, core_changes, metadata_changes)
+# tuples instead of a (processed, skipped, failed) count tuple.
+# A single format_dict_changes helper diffs two dicts into a semicolon-separated string.
+
+
+def _noop_downloader(uri):
+    return Path("/fake") / uri.split("/")[-1]
+
+
+def _default_config():
+    return {"agent_name": "test", "chunk_size": 1000, "chunk_overlap": 100}
+
+
+def test_format_dict_changes():
+    """format_dict_changes diffs two dicts into a semicolon-separated string of quoted changes."""
+    # Single changed key
+    assert format_dict_changes({"v": "3"}, {"v": "4"}) == 'v: "3" -> "4"'
+
+    # Multiple changes are semicolon-separated; unchanged keys excluded
+    result = format_dict_changes({"v": "3", "ext": ".pdf", "foo": "x"}, {"v": "4", "ext": ".pdf", "foo": "y"})
+    assert 'v: "3" -> "4"' in result
+    assert 'foo: "x" -> "y"' in result
+    assert "; " in result
+    assert "ext" not in result
+
+    # No changes → empty string
+    assert format_dict_changes({"v": "3"}, {"v": "3"}) == ""
+    assert format_dict_changes({}, {}) == ""
+
+    # Added and removed keys are reported
+    added = format_dict_changes({}, {"v": "1"})
+    assert "v" in added and '"1"' in added
+    removed = format_dict_changes({"v": "1"}, {})
+    assert "v" in removed and '"1"' in removed
+
+    # None treated as empty dict
+    assert format_dict_changes(None, None) == ""
+    result = format_dict_changes(None, {"description": "new"})
+    assert "description" in result and '"new"' in result
+
+
+def test_pcd_returns_change_tuples():
+    """process_changed_documents returns a list of (source_uri_base, state, core_changes, metadata_changes) tuples.
+    New, updated, skipped, sentinel, and duplicate sources are handled correctly."""
+
+    def source_generator():
+        yield (None, None, None)  # sentinel — should not appear
+        yield ("test://new.txt?v=1", "New Doc", None)  # new
+        yield ("test://updated.pdf?v=2", "Updated", {"description": "new"})  # updated
+        yield ("test://skip.txt?v=1", "Skipped", None)  # unchanged → skipped
+        yield ("test://new.txt?v=1", "Duplicate", None)  # duplicate → skipped
+
+    # process_document returns a change tuple for new/updated, None for skipped
+    side_effects = [
+        ("test://new.txt", "new", "", ""),
+        ("test://updated.pdf", "processed", 'v: "1" -> "2"', 'description: "old" -> "new"'),
+        None,  # skipped
+    ]
+
+    with (
+        patch("snowdoc.common.configure_connection", return_value=MagicMock()),
+        patch("snowdoc.common.clear_stage"),
+        patch("snowdoc.common.process_document", side_effect=side_effects),
+        patch("snowdoc.common.refresh_search_services"),
+    ):
+        changes = process_changed_documents(
+            source_generator(),
+            connection=MagicMock(),
+            downloader=_noop_downloader,
+            prefix="test://",
+            config=_default_config(),
+            max_workers=1,
+        )
+
+    assert isinstance(changes, list)
+    # Skipped, sentinel, and duplicate should not appear
+    assert len(changes) == 2
+    bases = {c[0] for c in changes}
+    assert bases == {"test://new.txt", "test://updated.pdf"}
+    # Check the updated entry carries diffs
+    updated = [c for c in changes if c[1] == "processed"][0]
+    assert 'v: "1" -> "2"' in updated[2]
+    assert 'description: "old" -> "new"' in updated[3]
+
+
+def test_pcd_deleted_and_broken_iterator():
+    """Deleted documents appear with state='deleted'; broken iterator prevents deletions (safety)."""
+
+    # --- Part 1: delete_missing=True with complete iteration ---
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    # Snowflake has one doc not in sources
+    mock_cursor.fetchall.return_value = [("test://old.txt?v=1",)]
+
+    with (
+        patch("snowdoc.common.configure_connection", return_value=mock_conn),
+        patch("snowdoc.common.clear_stage"),
+        patch("snowdoc.common.delete_rows"),
+        patch("snowdoc.common.refresh_search_services"),
+    ):
+        changes = process_changed_documents(
+            [],  # empty sources — everything in Snowflake is "missing"
+            connection=mock_conn,
+            downloader=_noop_downloader,
+            prefix="test://",
+            config=_default_config(),
+            max_workers=1,
+            delete_missing=True,
+        )
+
+    assert len(changes) == 1
+    assert changes[0] == ("test://old.txt", "deleted", "", "")
+
+    # --- Part 2: broken iterator should suppress deletions ---
+    class BrokenIterator:
+        def __init__(self):
+            self.done = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if not self.done:
+                self.done = True
+                return ("test://ok.txt?v=1", "OK", None)
+            raise RuntimeError("boom")
+
+    mock_conn2 = MagicMock()
+    mock_cursor2 = MagicMock()
+    mock_conn2.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor2)
+    mock_conn2.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    mock_cursor2.fetchall.return_value = [("test://ok.txt?v=1",), ("test://other.txt?v=1",)]
+
+    with (
+        patch("snowdoc.common.configure_connection", return_value=mock_conn2),
+        patch("snowdoc.common.clear_stage"),
+        patch("snowdoc.common.process_document", return_value=("test://ok.txt", "new", "", "")),
+        patch("snowdoc.common.delete_rows"),
+        patch("snowdoc.common.refresh_search_services"),
+    ):
+        changes = process_changed_documents(
+            BrokenIterator(),
+            connection=mock_conn2,
+            downloader=_noop_downloader,
+            prefix="test://",
+            config=_default_config(),
+            max_workers=1,
+            delete_missing=True,
+        )
+
+    deleted = [c for c in changes if c[1] == "deleted"]
+    assert len(deleted) == 0
