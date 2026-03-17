@@ -33,7 +33,7 @@ def test_opentext_document_content_download(opentext_conn, opentext_node_id):
 
         # Get the first document for content testing
         try:
-            first_uri, first_display_name = next(documents_gen)
+            first_uri, first_display_name, first_metadata = next(documents_gen)
         except StopIteration:
             pytest.fail(
                 f"No documents found in OpenText node {opentext_node_id}. Expected to find a document for content testing."
@@ -89,7 +89,7 @@ def test_get_opentext_documents_deployment(opentext_conn, opentext_node_id):
 
         # Get the first document for testing
         try:
-            first_uri, first_display_name = next(documents_gen)
+            first_uri, first_display_name, first_metadata = next(documents_gen)
         except StopIteration:
             pytest.fail(
                 f"No documents found in OpenText node {opentext_node_id}. Expected to find a document for testing."
@@ -102,8 +102,12 @@ def test_get_opentext_documents_deployment(opentext_conn, opentext_node_id):
         # Should be a string display name
         assert isinstance(first_display_name, str)
 
+        # Should have metadata dict
+        assert isinstance(first_metadata, dict), f"Expected metadata dict, got {type(first_metadata)}"
+
         print(f"✅ Successfully discovered document from OpenText node {opentext_node_id}")
         print(f"  - {first_uri} -> {first_display_name}")
+        print(f"  - Metadata: {first_metadata}")
 
         # Check if document has a valid file extension in the display name
         if "." in first_display_name and first_display_name.split(".")[-1]:

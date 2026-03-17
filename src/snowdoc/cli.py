@@ -56,7 +56,11 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # --- ingest-local ---
-    local_parser = subparsers.add_parser("ingest-local", parents=[common], help="Ingest local documents into Snowflake.")
+    local_parser = subparsers.add_parser(
+        "ingest-local",
+        parents=[common],
+        help="Ingest local documents into Snowflake.",
+    )
     local_parser.add_argument("root_dir", help="Root directory containing documents")
     local_parser.add_argument(
         "-n",
@@ -66,7 +70,11 @@ def main() -> None:
     )
 
     # --- ingest-opentext ---
-    opentext_parser = subparsers.add_parser("ingest-opentext", parents=[common], help="Ingest OpenText documents into Snowflake.")
+    opentext_parser = subparsers.add_parser(
+        "ingest-opentext",
+        parents=[common],
+        help="Ingest OpenText documents into Snowflake.",
+    )
     opentext_parser.add_argument("node_ids", nargs="+", type=int, help="OpenText node IDs to process")
     opentext_parser.add_argument(
         "-p", "--prefix", default="opentext://", help="URL prefix for the documents (default: opentext://)"

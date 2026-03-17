@@ -95,24 +95,27 @@ def test_set_document_text_basic(snowflake_conn, test_schema, tmp_path):
         # Setup - Using new URI format with query parameters
         source_uri = "test://integration/text_test.txt?timestamp=1234567890"
         test_text = "This is the document text content for testing."
+        test_metadata_json = '{"description": "A test document for integration testing"}'
 
-        # Execute - Set document text
+        # Execute - Set document text with metadata
         set_document_text(
             cursor=cursor,
             source_uri=source_uri,
             text=test_text,
             table_prefix="test_",
+            document_metadata_json=test_metadata_json,
         )
 
-        # Verify - Check that text was set in test_document_text table
+        # Verify - Check that text and metadata were set in test_document_text table
         cursor.execute(
-            "SELECT source_uri, document_text FROM test_document_text WHERE source_uri = :1",
+            "SELECT source_uri, document_text, document_metadata_json FROM test_document_text WHERE source_uri = :1",
             (source_uri,),
         )
         text_result = cursor.fetchone()
         assert text_result is not None, "No text found in document_text table"
         assert text_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{text_result[0]}'"
-        assert text_result[1] == test_text, f"Expected text content '{test_text}', got '{text_result[2]}'"
+        assert text_result[1] == test_text, f"Expected text content '{test_text}', got '{text_result[1]}'"
+        assert text_result[2] == test_metadata_json, f"Expected metadata '{test_metadata_json}', got '{text_result[2]}'"
 
         # Execute - Test versioning: set text with new query parameters (simulating update)
         new_source_uri = "test://integration/text_test.txt?timestamp=1234567891"
@@ -144,6 +147,30 @@ def test_set_document_text_basic(snowflake_conn, test_schema, tmp_path):
         assert new_text_result[1] == updated_text, f"Expected text content '{updated_text}', got '{new_text_result[1]}'"
 
 
+def test_set_document_text_without_metadata(snowflake_conn, test_schema, tmp_path):
+    """
+    Test that set_document_text stores NULL in document_metadata_json when no metadata is provided.
+    """
+    with snowflake_conn.cursor() as cursor:
+        source_uri = "test://integration/no_metadata.txt?timestamp=1234567890"
+        test_text = "Document without metadata."
+
+        set_document_text(
+            cursor=cursor,
+            source_uri=source_uri,
+            text=test_text,
+            table_prefix="test_",
+        )
+
+        cursor.execute(
+            "SELECT document_metadata_json FROM test_document_text WHERE source_uri = :1",
+            (source_uri,),
+        )
+        result = cursor.fetchone()
+        assert result is not None, "Row should exist"
+        assert result[0] is None, f"Expected NULL metadata, got '{result[0]}'"
+
+
 def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
     """
     Test that parse_document properly parses a staged PDF using Cortex and stores the result.
@@ -171,7 +198,10 @@ def test_parse_document_basic(snowflake_conn, test_schema, tmp_path):
         )
 
         # Verify - Check that parsed content was stored in test_document_text table
-        cursor.execute("SELECT source_uri, document_text FROM test_document_text WHERE source_uri = :1", (source_uri,))
+        cursor.execute(
+            "SELECT source_uri, document_text, document_metadata_json FROM test_document_text WHERE source_uri = :1",
+            (source_uri,),
+        )
         parse_result = cursor.fetchone()
         assert parse_result is not None, "No parsed content found in document_text table"
         assert parse_result[0] == source_uri, f"Expected source_uri '{source_uri}', got '{parse_result[0]}'"
