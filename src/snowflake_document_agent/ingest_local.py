@@ -1,9 +1,6 @@
-import argparse
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
-
-from .common import parse_common_options, process_changed_documents
 
 
 def get_local_documents(root_path: Path, source_name: str = "") -> Iterator[tuple[str, str]]:
@@ -45,30 +42,3 @@ def local_downloader(source_uri: str) -> Path:
     assert path.exists(), f"Path {path} for URI {source_uri} doesn't exist"
     assert path.is_file(), f"Path {path} for URI {source_uri} is not a file"
     return path
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest local documents into Snowflake.")
-    parser.add_argument(
-        "root_dir",
-        help="Root directory containing documents",
-    )
-    parser.add_argument(
-        "-n",
-        "--source-name",
-        default="",
-        help="Name of the source to insert into the URI. Placed in the 'netloc' section of the URI.",
-    )
-    args, process_changed_documents_params, logger = parse_common_options(parser)
-    root_path = Path(args.root_dir)
-    logger.info(f"Getting local documents in {root_path}...")
-    process_changed_documents(
-        get_local_documents(root_path=root_path, source_name=args.source_name),
-        downloader=local_downloader,
-        prefix=f"file://{args.source_name}",
-        **process_changed_documents_params,
-    )
-
-
-if __name__ == "__main__":
-    main()

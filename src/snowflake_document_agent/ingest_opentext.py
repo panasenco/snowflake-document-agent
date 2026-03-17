@@ -1,4 +1,3 @@
-import argparse
 from collections.abc import Iterator
 import logging
 from mimetypes import guess_extension
@@ -10,8 +9,6 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
-
-from .common import parse_common_options, process_changed_documents
 
 # HTTP timeout configuration: (connection_timeout, read_timeout)
 REQUEST_TIMEOUT = (30, 300)  # 30s connection, 300s read for large files
@@ -243,26 +240,3 @@ class OpenTextDownloader:
         temp_file.close()
 
         return Path(temp_file.name)
-
-
-def main() -> None:
-    """Main entry point for OpenText document ingestion CLI."""
-    parser = argparse.ArgumentParser(description="Ingest OpenText documents into Snowflake.")
-    parser.add_argument("node_ids", nargs="+", type=int, help="OpenText node IDs to process")
-    parser.add_argument(
-        "-p", "--prefix", default="opentext://", help="URL prefix for the documents (default: opentext://)"
-    )
-    args, process_changed_documents_params, logger = parse_common_options(parser)
-
-    opentext_downloader = OpenTextDownloader(logger=logger)
-    logger.info(f"Getting OpenText documents in root nodes {args.node_ids}...")
-    process_changed_documents(
-        opentext_downloader.get_opentext_documents(args.node_ids, prefix=args.prefix),
-        downloader=opentext_downloader,
-        prefix=f"{args.prefix}",
-        **process_changed_documents_params,
-    )
-
-
-if __name__ == "__main__":
-    main()

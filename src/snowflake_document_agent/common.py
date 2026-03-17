@@ -1,4 +1,3 @@
-from argparse import ArgumentParser, Namespace
 from collections.abc import Iterable
 from concurrent.futures import wait, ThreadPoolExecutor, FIRST_COMPLETED
 from hashlib import sha1
@@ -39,61 +38,6 @@ class ErrorCaptureHandler(logging.Handler):
     def emit(self, record):
         if record.levelno >= logging.ERROR:
             self.records.append((record.msg, record.exc_info))
-
-
-def get_console_logger(verbosity: int) -> Logger:
-    """Returns a logger object set to the provided level of verbosity (0 for warn, 1 for info, 2 for debug)."""
-    LOGGING_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
-    logging_level = LOGGING_LEVELS[min(verbosity, len(LOGGING_LEVELS) - 1)]  # cap to last level index
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging_level)
-    formatter = logging.Formatter("%(asctime)s - [%(levelname)s] %(message)s")
-    console_handler.setFormatter(formatter)
-    logger = getLogger("snowflake-document-agent")
-    logger.setLevel(logging_level)
-    logger.addHandler(console_handler)
-    logger.addHandler(ErrorCaptureHandler())
-    return logger
-
-
-def parse_common_options(parser: ArgumentParser) -> tuple[Namespace, dict[str, Any], Logger]:
-    """Convenience function for common options and outputs to a parser object.
-    1. Adds common arguments to the parser.
-    2. Parses the arguments.
-    3. Returns a tuple (parser_arguments, process_changed_documents_params, logger)
-    NOTE: Do not use -c, -d, -u, or -v in ingester-specific arguments!
-    """
-    parser.add_argument(
-        "-c", "--snowflake-connection", default="default", help="Name of Snowflake connection to use (default: default)"
-    )
-    parser.add_argument(
-        "-d",
-        "--delete-missing",
-        action="store_true",
-        help="Set to delete Snowflake documents matching the prerix that are not in the source. The default behavior is to add and update only.",
-    )
-    parser.add_argument(
-        "-u",
-        "--update-display-names",
-        action="store_true",
-        help="Set to update the display names of already-present documents. The default behavior is to not update the display names.",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        help="Be verbose. Include once for INFO output, twice for DEBUG output.",
-        action="count",
-        default=0,
-    )
-    args = parser.parse_args()
-    logger = get_console_logger(args.verbose)
-    process_changed_documents_params = {
-        "connection": args.snowflake_connection,
-        "delete_missing": args.delete_missing,
-        "update_display_names": args.update_display_names,
-        "logger": logger,
-    }
-    return args, process_changed_documents_params, logger
 
 
 def load_config(config_path: str = "snowflake.yml") -> dict[str, Any]:
