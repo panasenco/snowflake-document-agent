@@ -5,8 +5,8 @@ import pytest
 import snowflake.connector
 import yaml
 
-from snowflake_document_agent.common import ALL_TABLES, load_config, clear_stage
-from snowflake_document_agent.ingest_opentext import OpenTextDownloader
+from snowdoc.common import ALL_TABLES, load_config, clear_stage
+from snowdoc.ingest_opentext import OpenTextDownloader
 
 
 def pytest_addoption(parser):

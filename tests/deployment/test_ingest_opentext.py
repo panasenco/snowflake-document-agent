@@ -4,8 +4,8 @@ from itertools import islice
 
 import pytest
 
-from snowflake_document_agent.ingest_opentext import OpenTextDownloader
-from snowflake_document_agent.common import process_changed_documents
+from snowdoc.ingest_opentext import OpenTextDownloader
+from snowdoc.common import process_changed_documents
 
 
 def test_opentext_conn_fixture_deployment(opentext_conn):

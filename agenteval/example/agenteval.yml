@@ -2,7 +2,7 @@ evaluator:
   model: claude-3_7-us
   eval_method: canonical
 target:
-  type: snowflake_document_agent.agenteval_target.SnowflakeAgentTarget
+  type: snowdoc.agenteval_target.SnowflakeAgentTarget
   agent_name: DOCUMENT_AGENT
   snowflake_account: my-snowflake-account
 tests:

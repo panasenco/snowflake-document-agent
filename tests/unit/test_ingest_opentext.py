@@ -3,13 +3,13 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from requests.exceptions import HTTPError
-from snowflake_document_agent.ingest_opentext import OpenTextDownloader
+from snowdoc.ingest_opentext import OpenTextDownloader
 
 
 def test_get_opentext_documents_basic():
     """Test that get_opentext_documents returns generator of (source_uri, display_name) tuples."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
@@ -60,7 +60,7 @@ def test_get_opentext_documents_basic():
 def test_get_opentext_documents_handles_folder():
     """Test that get_opentext_documents recursively processes folders."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
@@ -133,7 +133,7 @@ def test_get_opentext_documents_handles_folder():
 def test_get_opentext_documents_handles_shortcut():
     """Test that get_opentext_documents resolves shortcuts to actual documents."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
@@ -197,7 +197,7 @@ def test_get_opentext_documents_handles_shortcut():
 def test_get_opentext_documents_handles_http_errors():
     """Test that get_opentext_documents handles 404/401 errors gracefully across all API calls and continues processing."""
     # Create actual OpenTextDownloader instance with mocked authentication
-    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
@@ -327,7 +327,7 @@ def test_get_opentext_documents_handles_http_errors():
 
 def test_opentext_downloader_call_basic():
     """Test that OpenTextDownloader.__call__ downloads documents properly."""
-    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
@@ -362,7 +362,7 @@ def test_opentext_downloader_call_basic():
 
 def test_opentext_downloader_call_uri_format():
     """Test that OpenTextDownloader.__call__ errors on invalid URI format."""
-    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
         mock_request.return_value = mock_auth_response
@@ -405,7 +405,7 @@ def test_opentext_downloader_call_uri_format():
 
 def test_opentext_downloader_initialization():
     """Test OpenTextDownloader initialization with credentials."""
-    with patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request:
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
         # Mock auth response
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}
@@ -443,7 +443,7 @@ def test_opentext_downloader_env_vars():
 
     with (
         patch.dict("os.environ", env_vars),
-        patch("snowflake_document_agent.ingest_opentext.requests.request") as mock_request,
+        patch("snowdoc.ingest_opentext.requests.request") as mock_request,
     ):
         mock_auth_response = Mock()
         mock_auth_response.json.return_value = {"access_token": "fake_token"}

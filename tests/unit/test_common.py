@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from snowflake_document_agent.common import (
+from snowdoc.common import (
     docx_to_html,
     excel_to_html,
     doc_to_text,
@@ -192,10 +192,10 @@ def test_process_changed_documents_handles_none_sentinel():
 
     # Mock the supporting functions that interact with Snowflake
     with (
-        patch("snowflake_document_agent.common.configure_connection", return_value=mock_connection),
-        patch("snowflake_document_agent.common.clear_stage"),
-        patch("snowflake_document_agent.common.process_document", return_value=(1, 0, 0)),
-        patch("snowflake_document_agent.common.refresh_search_services"),
+        patch("snowdoc.common.configure_connection", return_value=mock_connection),
+        patch("snowdoc.common.clear_stage"),
+        patch("snowdoc.common.process_document", return_value=(1, 0, 0)),
+        patch("snowdoc.common.refresh_search_services"),
     ):
         # Execute - Process the generator that includes error sentinels
         processed, skipped, failed = process_changed_documents(

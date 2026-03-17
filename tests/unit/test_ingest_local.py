@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from snowflake_document_agent.ingest_local import get_local_documents, local_downloader
+from snowdoc.ingest_local import get_local_documents, local_downloader
 
 
 def test_get_local_documents_basic(tmp_path):

@@ -1,5 +1,5 @@
 {
-  description = "NixOS flake for snowflake-document-agent";
+  description = "NixOS flake for snowdoc";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

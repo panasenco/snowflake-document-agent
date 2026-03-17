@@ -16,7 +16,7 @@ def get_console_logger(verbosity: int) -> Logger:
     console_handler.setLevel(logging_level)
     formatter = logging.Formatter("%(asctime)s - [%(levelname)s] %(message)s")
     console_handler.setFormatter(formatter)
-    logger = getLogger("snowflake-document-agent")
+    logger = getLogger("snowdoc")
     logger.setLevel(logging_level)
     logger.addHandler(console_handler)
     logger.addHandler(ErrorCaptureHandler())
@@ -51,7 +51,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="snowdoc",
-        description="Snowflake Document Agent CLI - ingest documents into Snowflake.",
+        description="snowdoc - ingest documents into Snowflake.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
