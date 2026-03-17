@@ -43,8 +43,8 @@ def test_get_opentext_documents_basic():
     # Execute - call as method on the downloader instance
     docs_generator = downloader.get_opentext_documents(opentext_nodes=[12345])
 
-    # Should yield exactly one tuple (source_uri, display_name)
-    source_uri, display_name = next(docs_generator)
+    # Should yield exactly one tuple (source_uri, display_name, metadata)
+    source_uri, display_name, metadata = next(docs_generator)
 
     # Should be no more items in the generator
     with pytest.raises(StopIteration):
@@ -55,6 +55,9 @@ def test_get_opentext_documents_basic():
 
     # Should have correct display name
     assert display_name == "test_document.pdf"
+
+    # Should have metadata dict (with no description since none was in the node data)
+    assert isinstance(metadata, dict)
 
 
 def test_get_opentext_documents_handles_folder():
@@ -116,8 +119,8 @@ def test_get_opentext_documents_handles_folder():
     # Execute - call as method on the downloader instance
     docs_generator = downloader.get_opentext_documents(opentext_nodes=[100])
 
-    # Should yield exactly one tuple (source_uri, display_name) from the folder
-    source_uri, display_name = next(docs_generator)
+    # Should yield exactly one tuple (source_uri, display_name, metadata) from the folder
+    source_uri, display_name, metadata = next(docs_generator)
 
     # Should be no more items in the generator
     with pytest.raises(StopIteration):
@@ -128,6 +131,9 @@ def test_get_opentext_documents_handles_folder():
 
     # Should have display name with parent folder
     assert display_name == "Documents/child_doc.docx"
+
+    # Should have metadata dict from the child document node
+    assert isinstance(metadata, dict)
 
 
 def test_get_opentext_documents_handles_shortcut():
@@ -180,7 +186,7 @@ def test_get_opentext_documents_handles_shortcut():
     docs_generator = downloader.get_opentext_documents(opentext_nodes=[500])
 
     # Should yield exactly one tuple with shortcut's display name
-    source_uri, display_name = next(docs_generator)
+    source_uri, display_name, metadata = next(docs_generator)
 
     # Should be no more items in the generator
     with pytest.raises(StopIteration):
@@ -192,6 +198,9 @@ def test_get_opentext_documents_handles_shortcut():
 
     # Should use shortcut name in display name (shortcut_name.pdf replaces actual_doc.pdf)
     assert display_name == "shortcut_name.pdf"
+
+    # Should have metadata dict from the actual document (not the shortcut)
+    assert isinstance(metadata, dict)
 
 
 def test_get_opentext_documents_handles_http_errors():
@@ -307,22 +316,23 @@ def test_get_opentext_documents_handles_http_errors():
         "Should have version 401 error"
     )
 
-    # Should continue processing and return (None, None) sentinels for errors plus successful node (300)
+    # Should continue processing and return (None, None, None) sentinels for errors plus successful node (300)
     assert len(docs) == 7, f"Expected 7 results (6 error sentinels + 1 success), got {len(docs)}"
 
     # Count error sentinels and get successful documents
-    error_sentinel_count = sum(1 for uri, name in docs if uri is None and name is None)
-    successful_docs = [(uri, name) for uri, name in docs if uri is not None and name is not None]
+    error_sentinel_count = sum(1 for uri, name, meta in docs if uri is None and name is None)
+    successful_docs = [(uri, name, meta) for uri, name, meta in docs if uri is not None and name is not None]
 
     assert error_sentinel_count == 6, f"Expected 6 error sentinels, got {error_sentinel_count}"
     assert len(successful_docs) == 1, f"Expected 1 successful document, got {len(successful_docs)}"
 
     # Verify the successful document
-    source_uri, display_name = successful_docs[0]
+    source_uri, display_name, metadata = successful_docs[0]
     assert source_uri.startswith("opentext://300")
     assert "v=1" in source_uri
     assert "ext=.txt" in source_uri
     assert display_name == "successful_doc.txt"
+    assert isinstance(metadata, dict)
 
 
 def test_opentext_downloader_call_basic():
@@ -454,3 +464,87 @@ def test_opentext_downloader_env_vars():
         assert downloader.client_id == "env_client"
         assert downloader.client_secret == "env_secret"
         assert downloader.api_prefix == "https://env.api.com"
+
+
+def test_get_opentext_documents_includes_description_metadata():
+    """Test that get_opentext_documents extracts description from node data and includes it in metadata."""
+    # Create actual OpenTextDownloader instance with mocked authentication
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_request.return_value = mock_auth_response
+
+        downloader = OpenTextDownloader(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+    def mock_call_side_effect(method, path):
+        mock_response = Mock()
+        if path == "opentext/cloud/v1/nodes/12345":
+            mock_response.json.return_value = {
+                "data": {
+                    "id": 12345,
+                    "name": "documented_file",
+                    "type_name": "Document",
+                    "description": "This is an important compliance document for Q4 review",
+                }
+            }
+        elif path == "opentext/cloud/v1/nodes/12345/versions/0":
+            mock_response.json.return_value = {"data": {"file_type": "pdf", "version_number": 1}}
+        return mock_response
+
+    downloader.call = Mock(side_effect=mock_call_side_effect)
+
+    docs_generator = downloader.get_opentext_documents(opentext_nodes=[12345])
+    source_uri, display_name, metadata = next(docs_generator)
+
+    # Metadata should contain the description from node_data
+    assert metadata is not None
+    assert isinstance(metadata, dict)
+    assert "description" in metadata
+    assert metadata["description"] == "This is an important compliance document for Q4 review"
+
+
+def test_get_opentext_documents_metadata_without_description():
+    """Test that metadata dict is returned even when the node has no description."""
+    with patch("snowdoc.ingest_opentext.requests.request") as mock_request:
+        mock_auth_response = Mock()
+        mock_auth_response.json.return_value = {"access_token": "fake_token"}
+        mock_request.return_value = mock_auth_response
+
+        downloader = OpenTextDownloader(
+            client_id="test_client",
+            client_secret="test_secret",
+            api_prefix="https://api.example.com",
+            app_client_id="app_client",
+            app_client_secret="app_secret",
+        )
+
+    def mock_call_side_effect(method, path):
+        mock_response = Mock()
+        if path == "opentext/cloud/v1/nodes/99999":
+            mock_response.json.return_value = {
+                "data": {
+                    "id": 99999,
+                    "name": "no_description_file",
+                    "type_name": "Document",
+                    # No "description" key at all
+                }
+            }
+        elif path == "opentext/cloud/v1/nodes/99999/versions/0":
+            mock_response.json.return_value = {"data": {"file_type": "txt", "version_number": 1}}
+        return mock_response
+
+    downloader.call = Mock(side_effect=mock_call_side_effect)
+
+    docs_generator = downloader.get_opentext_documents(opentext_nodes=[99999])
+    source_uri, display_name, metadata = next(docs_generator)
+
+    # Should still return a metadata dict, just without the description key
+    assert metadata is not None
+    assert isinstance(metadata, dict)
+    assert "description" not in metadata

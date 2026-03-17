@@ -171,15 +171,15 @@ def test_process_changed_documents_handles_none_sentinel():
     """
 
     def error_yielding_generator():
-        """Generator that yields some valid documents and then (None, None) to signal errors"""
+        """Generator that yields some valid documents and then (None, None, None) to signal errors"""
         # First yield a successful document
-        yield ("test://unit/success.txt", "Success Document")
-        # Then yield (None, None) to signal an error occurred
-        yield (None, None)
+        yield ("test://unit/success.txt", "Success Document", None)
+        # Then yield (None, None, None) to signal an error occurred
+        yield (None, None, None)
         # Then yield another successful document
-        yield ("test://unit/success2.txt", "Success Document 2")
+        yield ("test://unit/success2.txt", "Success Document 2", None)
         # And another error sentinel
-        yield (None, None)
+        yield (None, None, None)
 
     def mock_downloader(source_uri: str) -> Path:
         """Mock downloader that returns fake paths"""
@@ -216,4 +216,54 @@ def test_process_changed_documents_handles_none_sentinel():
     assert skipped == 0, f"Expected 0 skipped documents, got {skipped}"
     assert failed == 2, f"Expected 2 failed (from None sentinels), got {failed}"
 
-    print("✅ Unit test passed - (None, None) yields should increment failed counter!")
+    print("✅ Unit test passed - (None, None, None) yields should increment failed counter!")
+
+
+def test_process_changed_documents_passes_metadata_to_process_document():
+    """
+    Test that process_changed_documents passes document_metadata_json from the source 3-tuple
+    through to process_document for each document.
+    """
+
+    def source_generator():
+        yield ("test://unit/with_meta.txt", "With Metadata", {"description": "A described document"})
+        yield ("test://unit/no_meta.txt", "No Metadata", None)
+
+    def mock_downloader(source_uri: str) -> Path:
+        return Path("/fake/path") / source_uri.split("/")[-1]
+
+    mock_connection = MagicMock()
+    mock_cursor = MagicMock()
+    mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+
+    with (
+        patch("snowdoc.common.configure_connection", return_value=mock_connection),
+        patch("snowdoc.common.clear_stage"),
+        patch("snowdoc.common.process_document", return_value=(1, 0, 0)) as mock_process_doc,
+        patch("snowdoc.common.refresh_search_services"),
+    ):
+        process_changed_documents(
+            source_generator(),
+            connection=mock_connection,
+            downloader=mock_downloader,
+            prefix="test://unit/",
+            config={
+                "agent_name": "test",
+                "chunk_size": 1000,
+                "chunk_overlap": 100,
+            },
+            max_workers=1,
+        )
+
+    # Verify process_document was called twice
+    assert mock_process_doc.call_count == 2
+
+    # Verify the first call included metadata dict
+    first_call_args = mock_process_doc.call_args_list[0]
+    assert first_call_args[0][2] == "With Metadata"  # display_name
+    # document_metadata_json should be passed as a JSON string
+    assert '{"description": "A described document"}' in str(first_call_args) or "description" in str(first_call_args)
+
+    # Verify the second call had None metadata
+    second_call_args = mock_process_doc.call_args_list[1]
+    assert second_call_args[0][2] == "No Metadata"  # display_name

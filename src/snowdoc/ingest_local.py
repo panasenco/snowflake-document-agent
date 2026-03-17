@@ -3,7 +3,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 
-def get_local_documents(root_path: Path, source_name: str = "") -> Iterator[tuple[str, str]]:
+def get_local_documents(root_path: Path, source_name: str = "") -> Iterator[tuple[str, str, None]]:
     """Returns all files in the root folder and its subfolders.
     Returns a dictionary with source_uri's (absolute paths with timestamps) as the keys and
     display_name's (paths relative to the root directory) as the values.
@@ -29,7 +29,7 @@ def get_local_documents(root_path: Path, source_name: str = "") -> Iterator[tupl
                     "",
                 )
             )
-            yield source_uri, file_path.relative_to(root_path).as_posix()
+            yield source_uri, file_path.relative_to(root_path).as_posix(), None
 
 
 def local_downloader(source_uri: str) -> Path:

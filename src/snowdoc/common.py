@@ -204,14 +204,15 @@ def set_document_text(
     table_prefix: str,
     source_uri: str,
     text: str,
+    document_metadata_json: str | None = None,
 ) -> None:
     """Uploads a document's text directly to document_text for documents that don't need to be parsed."""
     cursor.execute(
         f"""
-        insert into {table_prefix}document_text (source_uri, document_text)
-        select :1 as source_uri, :2 as document_text
+        insert into {table_prefix}document_text (source_uri, document_text, document_metadata_json)
+        select :1 as source_uri, :2 as document_text, :3 as document_metadata_json
         """,
-        (source_uri, text),
+        (source_uri, text, document_metadata_json),
     )
 
 
@@ -221,6 +222,7 @@ def parse_document(
     table_prefix: str,
     source_uri: str,
     stage_path: str,
+    document_metadata_json: str | None = None,
 ) -> None:
     """Parses a staged document and inserts into document_text.
     Raises RuntimeError if the parsing fails.
@@ -228,11 +230,11 @@ def parse_document(
     # Use ai_parse_document to generate the parsed text
     cursor.execute(
         f"""
-        insert into {table_prefix}document_text (source_uri, document_text)
+        insert into {table_prefix}document_text (source_uri, document_text, document_metadata_json)
         with parsed_document as (
             select
                 ai_parse_document(
-                    to_file('@{table_prefix}documents', :2),
+                    to_file('@{table_prefix}documents', :3),
                     {{'mode': 'OCR'}}
                 )::string as parsed_text
         )
@@ -241,10 +243,11 @@ def parse_document(
             case
                 when startswith(parsed_text, '{{"content":"') then json_extract_path_text(parsed_text, 'content')
                 else parsed_text
-            end as document_text
+            end as document_text,
+            :2 as document_metadata_json
         from parsed_document
         """,
-        (source_uri, stage_path),
+        (source_uri, document_metadata_json, stage_path),
     )
     # Verify the content was inserted/updated successfully
     cursor.execute(
@@ -363,6 +366,7 @@ def process_document(
     chunk_config_hash: str,
     update_display_name: bool = False,
     logger: Logger = getLogger(),
+    document_metadata_json: str | None = None,
 ) -> tuple[int, int, int]:
     """Process a single document end-to-end. Returns a (processed, skipped, failed) count tuple."""
     name = f"{source_uri} ({display_name})"  # Convenient shorthand for document name
@@ -387,6 +391,7 @@ def process_document(
                             table_prefix=table_prefix,
                             source_uri=source_uri,
                             text=str(from_path(local_path).best()),
+                            document_metadata_json=document_metadata_json,
                         )
                     case "htm" | "html":
                         # The HTML files are often Word exports with a bunch of fluff, so clean before uploading
@@ -398,6 +403,7 @@ def process_document(
                             table_prefix=table_prefix,
                             source_uri=source_uri,
                             text=cleaned_html,
+                            document_metadata_json=document_metadata_json,
                         )
                     case "xls" | "xlsx" | "xlsm":
                         # Convert Excel to HTML
@@ -409,6 +415,7 @@ def process_document(
                             table_prefix=table_prefix,
                             source_uri=source_uri,
                             text=document_html,
+                            document_metadata_json=document_metadata_json,
                         )
                     case "doc":
                         # Convert doc format (Word 1997) to text
@@ -420,6 +427,7 @@ def process_document(
                             table_prefix=table_prefix,
                             source_uri=source_uri,
                             text=document_text,
+                            document_metadata_json=document_metadata_json,
                         )
                     case "docx":
                         # Convert docx format (Word 2007 onward) to HTML
@@ -431,6 +439,7 @@ def process_document(
                             table_prefix=table_prefix,
                             source_uri=source_uri,
                             text=document_html,
+                            document_metadata_json=document_metadata_json,
                         )
                     case _:
                         # Parse in Snowflake
@@ -444,6 +453,7 @@ def process_document(
                             table_prefix=table_prefix,
                             source_uri=source_uri,
                             stage_path=stage_path,
+                            document_metadata_json=document_metadata_json,
                         )
                 processed = True
             except Exception:
@@ -553,7 +563,7 @@ def process_changed_documents(
     logger: Logger = getLogger(),
 ) -> tuple[int, int, int]:
     """Process just the documents that have changed since the last ingestion into Snowflake.
-    Accepts an iterable (list or generator) of (source_uri, display_name) tuples.
+    Accepts an iterable (list or generator) of (source_uri, display_name, metadata) tuples.
     Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
     Accepts a Snowflake connection as either a connection name (string) or a connection object.
     Ingests new or updated documents matching the prefix into Snowflake.
@@ -584,7 +594,7 @@ def process_changed_documents(
                     logger.debug(
                         f"Getting next source. {process_sources=}, {list(future_uris.values())=}, {max_workers=}"
                     )
-                    source_uri, display_name = next(sources_iterator)
+                    source_uri, display_name, document_metadata = next(sources_iterator)
                 except StopIteration:
                     process_sources = False
                     logger.debug(f"All sources fetched. {len(source_uris)=}")
@@ -604,6 +614,8 @@ def process_changed_documents(
                         n_skipped += 1
                     else:
                         source_uris.add(source_uri)
+                        # Serialize metadata dict to JSON string for storage
+                        document_metadata_json = json.dumps(document_metadata) if document_metadata else None
                         logger.info(f"Submitting {source_uri} for processing...")
                         future = executor.submit(
                             process_document,
@@ -616,6 +628,7 @@ def process_changed_documents(
                             chunk_config_hash,
                             update_display_names,
                             logger,
+                            document_metadata_json,
                         )
                         future_uris[future] = source_uri
             elif len(future_uris) > 0:

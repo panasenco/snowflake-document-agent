@@ -124,7 +124,7 @@ class OpenTextDownloader:
         prefix: str = "opentext://",
         parents: list[str] = [],
         suppress_errors: bool = True,
-    ) -> Iterator[tuple[str, str]]:
+    ) -> Iterator[tuple[str, str, dict | None]]:
         """Discover OpenText documents from specified node IDs.
 
         Args:
@@ -133,7 +133,7 @@ class OpenTextDownloader:
             parents: List of parent folders to construct a display_name containing all the parent folders
 
         Returns:
-            An iterator of (source_uri, display_name) tuples.
+            An iterator of (source_uri, display_name, metadata) tuples.
         """
         for node_id in opentext_nodes:
             # Get node info from OpenText API
@@ -142,7 +142,7 @@ class OpenTextDownloader:
             except requests.exceptions.HTTPError:
                 if suppress_errors:
                     self.logger.exception(f"Failed to get node info for OpenText node {node_id} ({parents=})")
-                    yield None, None
+                    yield None, None, None
                     continue
                 else:
                     raise
@@ -157,7 +157,7 @@ class OpenTextDownloader:
                     except requests.exceptions.HTTPError:
                         if suppress_errors:
                             self.logger.exception(f"Failed to get children for OpenText node {name}")
-                            yield None, None
+                            yield None, None, None
                             continue
                         else:
                             raise
@@ -173,7 +173,7 @@ class OpenTextDownloader:
                     except requests.exceptions.HTTPError:
                         if suppress_errors:
                             self.logger.exception(f"Failed to get version info for OpenText node {name}")
-                            yield None, None
+                            yield None, None, None
                             continue
                         else:
                             raise
@@ -184,7 +184,7 @@ class OpenTextDownloader:
                     else:
                         if suppress_errors:
                             self.logger.exception(f"Failed to determine extension for node {name}. {version=}")
-                            yield None, None
+                            yield None, None, None
                             continue
                         else:
                             raise
@@ -192,13 +192,17 @@ class OpenTextDownloader:
                     source_uri = f"{prefix}{node_id}?" + urlencode(
                         {"v": version["data"]["version_number"], "ext": extension}
                     )
-                    yield source_uri, "/".join([*parents, f"{node_data['name']}{extension}"])
+                    # Build metadata dict from node data
+                    metadata = {}
+                    if node_data.get("description"):
+                        metadata["description"] = node_data["description"]
+                    yield source_uri, "/".join([*parents, f"{node_data['name']}{extension}"]), metadata
                 case "Shortcut":
                     # Handle shortcut - follow original_id but preserve shortcut name
                     original_id = node_data["original_id"]
                     try:
                         # Update the display name of linked document(s) with shortcut name instead of original name
-                        for original_uri, original_display_name in self.get_opentext_documents(
+                        for original_uri, original_display_name, original_metadata in self.get_opentext_documents(
                             [original_id], prefix=prefix, suppress_errors=False
                         ):
                             # Replace the first part of the original display name with the shortcut name
@@ -210,12 +214,12 @@ class OpenTextDownloader:
                                 display_name_parts[0] = node_data["name"] + "." + display_name_parts[0].split(".", 1)[1]
                             else:
                                 display_name_parts[0] = node_data["name"]
-                            # Save the new display name
-                            yield original_uri, "/".join(parents + display_name_parts)
+                            # Save the new display name, preserving metadata from the original document
+                            yield original_uri, "/".join(parents + display_name_parts), original_metadata
                     except Exception:
                         if suppress_errors:
                             self.logger.exception(f"Failed to dereference shortcut {name}")
-                            yield None, None
+                            yield None, None, None
                             continue
                         else:
                             raise

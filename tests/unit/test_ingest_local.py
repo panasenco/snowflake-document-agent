@@ -18,19 +18,23 @@ def test_get_local_documents_basic(tmp_path):
     # Execute
     docs_gen = get_local_documents(d, "local")
 
-    # Convert to list for verification - should return Iterator[tuple[str, str]] (URI, display_name)
+    # Convert to list for verification - should return Iterator[tuple[str, str, None]] (URI, display_name, metadata)
     docs_list = list(docs_gen)
     assert len(docs_list) == 2
 
     # Find tuple that corresponds to our files
-    file1_tuple = next(((uri, display_name) for uri, display_name in docs_list if "file1.txt" in uri), None)
-    file2_tuple = next(((uri, display_name) for uri, display_name in docs_list if "subdir/file2.txt" in uri), None)
+    file1_tuple = next(
+        ((uri, display_name, metadata) for uri, display_name, metadata in docs_list if "file1.txt" in uri), None
+    )
+    file2_tuple = next(
+        ((uri, display_name, metadata) for uri, display_name, metadata in docs_list if "subdir/file2.txt" in uri), None
+    )
 
     assert file1_tuple is not None
     assert file2_tuple is not None
 
-    file1_uri, file1_display_name = file1_tuple
-    file2_uri, file2_display_name = file2_tuple
+    file1_uri, file1_display_name, file1_metadata = file1_tuple
+    file2_uri, file2_display_name, file2_metadata = file2_tuple
 
     assert file1_uri.startswith("file://local/")
     assert file2_uri.startswith("file://local/")
@@ -40,6 +44,10 @@ def test_get_local_documents_basic(tmp_path):
     # Display names should be relative paths
     assert file1_display_name == "file1.txt"
     assert file2_display_name == "subdir/file2.txt"
+
+    # Local documents should have None metadata
+    assert file1_metadata is None
+    assert file2_metadata is None
 
 
 def test_get_local_documents_ignores_hidden(tmp_path):
@@ -61,23 +69,26 @@ def test_get_local_documents_ignores_hidden(tmp_path):
     # Execute
     docs_gen = get_local_documents(d, "local")
 
-    # Convert to list for verification - should return Iterator[tuple[str, str]] (URI, display_name)
+    # Convert to list for verification - should return Iterator[tuple[str, str, None]] (URI, display_name, metadata)
     docs_list = list(docs_gen)
     assert len(docs_list) == 1
 
     # Get the single tuple and verify it corresponds to visible.txt
-    visible_uri, visible_display_name = docs_list[0]
+    visible_uri, visible_display_name, visible_metadata = docs_list[0]
     assert "visible.txt" in visible_uri
     assert visible_uri.startswith("file://local/")
     assert "m=" in visible_uri
 
     # Verify no hidden files are included by checking all URIs
-    for uri, display_name in docs_list:
+    for uri, display_name, metadata in docs_list:
         assert ".hidden" not in uri
         assert "file_in_hidden" not in uri
 
     # Verify the display name is correct
     assert visible_display_name == "visible.txt"
+
+    # Local documents should have None metadata
+    assert visible_metadata is None
 
 
 def test_get_local_documents_non_existent_root():
@@ -178,7 +189,7 @@ def test_integration_get_documents_and_downloader(tmp_path):
     assert len(docs_list) == 2
 
     # Test that each URI from get_local_documents can be downloaded
-    for source_uri, display_name in docs_list:
+    for source_uri, display_name, metadata in docs_list:
         downloaded_path = local_downloader(source_uri)
         assert downloaded_path.exists()
         assert downloaded_path.is_file()
@@ -186,3 +197,6 @@ def test_integration_get_documents_and_downloader(tmp_path):
         # Verify the display name matches the relative path
         expected_relative_path = downloaded_path.relative_to(d).as_posix()
         assert display_name == expected_relative_path
+
+        # Local documents should have None metadata
+        assert metadata is None
