@@ -196,21 +196,25 @@ def test_process_changed_documents_handles_none_sentinel():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_connection),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=("test://unit/success.txt", "new", "", "", "")),
+        patch(
+            "snowdoc.common.process_document", return_value=("test://unit/success.txt", "Success", "new", "", "", "")
+        ),
         patch("snowdoc.common.refresh_search_services"),
     ):
         # Execute - Process the generator that includes error sentinels
-        changes = process_changed_documents(
-            error_yielding_generator(),
-            connection=mock_connection,
-            downloader=mock_downloader,
-            prefix="test://unit/",
-            config={
-                "agent_name": "test",
-                "chunk_size": 1000,
-                "chunk_overlap": 100,
-            },
-            max_workers=1,
+        changes = list(
+            process_changed_documents(
+                error_yielding_generator(),
+                connection=mock_connection,
+                downloader=mock_downloader,
+                prefix="test://unit/",
+                config={
+                    "agent_name": "test",
+                    "chunk_size": 1000,
+                    "chunk_overlap": 100,
+                },
+                max_workers=1,
+            )
         )
 
     # Verify - Should have processed 2 successful docs; sentinels should not appear in changes
@@ -240,21 +244,23 @@ def test_process_changed_documents_passes_metadata_to_process_document():
         patch("snowdoc.common.configure_connection", return_value=mock_connection),
         patch("snowdoc.common.clear_stage"),
         patch(
-            "snowdoc.common.process_document", return_value=("test://unit/doc", "new", "", "", "")
+            "snowdoc.common.process_document", return_value=("test://unit/doc", "Doc", "new", "", "", "")
         ) as mock_process_doc,
         patch("snowdoc.common.refresh_search_services"),
     ):
-        process_changed_documents(
-            source_generator(),
-            connection=mock_connection,
-            downloader=mock_downloader,
-            prefix="test://unit/",
-            config={
-                "agent_name": "test",
-                "chunk_size": 1000,
-                "chunk_overlap": 100,
-            },
-            max_workers=1,
+        list(
+            process_changed_documents(
+                source_generator(),
+                connection=mock_connection,
+                downloader=mock_downloader,
+                prefix="test://unit/",
+                config={
+                    "agent_name": "test",
+                    "chunk_size": 1000,
+                    "chunk_overlap": 100,
+                },
+                max_workers=1,
+            )
         )
 
     # Verify process_document was called twice
@@ -276,7 +282,7 @@ def test_process_changed_documents_passes_metadata_to_process_document():
 # ============================================================
 # These tests define the expected interface for the planned change where
 # process_changed_documents returns a list of
-# (source_uri_base, state, core_changes, metadata_changes, display_name_changes)
+# (source_uri_base, display_name, state, core_changes, metadata_changes, display_name_changes)
 # tuples instead of a (processed, skipped, failed) count tuple.
 # A single format_dict_changes helper diffs two dicts into a semicolon-separated string.
 
@@ -317,7 +323,7 @@ def test_format_dict_changes():
 
 def test_pcd_returns_change_tuples():
     """process_changed_documents returns a list of
-    (source_uri_base, state, core_changes, metadata_changes, display_name_changes) tuples.
+    (source_uri_base, display_name, state, core_changes, metadata_changes, display_name_changes) tuples.
     New, updated, skipped, sentinel, and duplicate sources are handled correctly."""
 
     def source_generator():
@@ -329,8 +335,15 @@ def test_pcd_returns_change_tuples():
 
     # process_document returns a change tuple for new/updated, None for skipped
     side_effects = [
-        ("test://new.txt", "new", "", "", ""),
-        ("test://updated.pdf", "processed", "v: '1' -> '2'", "description: 'old' -> 'new'", "'OldName' -> 'Updated'"),
+        ("test://new.txt", "New Doc", "new", "", "", ""),
+        (
+            "test://updated.pdf",
+            "Updated",
+            "processed",
+            "v: '1' -> '2'",
+            "description: 'old' -> 'new'",
+            "'OldName' -> 'Updated'",
+        ),
         None,  # skipped
     ]
 
@@ -340,13 +353,15 @@ def test_pcd_returns_change_tuples():
         patch("snowdoc.common.process_document", side_effect=side_effects),
         patch("snowdoc.common.refresh_search_services"),
     ):
-        changes = process_changed_documents(
-            source_generator(),
-            connection=MagicMock(),
-            downloader=_noop_downloader,
-            prefix="test://",
-            config=_default_config(),
-            max_workers=1,
+        changes = list(
+            process_changed_documents(
+                source_generator(),
+                connection=MagicMock(),
+                downloader=_noop_downloader,
+                prefix="test://",
+                config=_default_config(),
+                max_workers=1,
+            )
         )
 
     assert isinstance(changes, list)
@@ -355,10 +370,10 @@ def test_pcd_returns_change_tuples():
     bases = {c[0] for c in changes}
     assert bases == {"test://new.txt", "test://updated.pdf"}
     # Check the updated entry carries diffs
-    updated = [c for c in changes if c[1] == "processed"][0]
-    assert "v: '1' -> '2'" in updated[2]
-    assert "description: 'old' -> 'new'" in updated[3]
-    assert "'OldName' -> 'Updated'" in updated[4]
+    updated = [c for c in changes if c[2] == "processed"][0]
+    assert "v: '1' -> '2'" in updated[3]
+    assert "description: 'old' -> 'new'" in updated[4]
+    assert "'OldName' -> 'Updated'" in updated[5]
 
 
 def test_pcd_deleted_and_broken_iterator():
@@ -378,18 +393,20 @@ def test_pcd_deleted_and_broken_iterator():
         patch("snowdoc.common.delete_rows"),
         patch("snowdoc.common.refresh_search_services"),
     ):
-        changes = process_changed_documents(
-            [],  # empty sources — everything in Snowflake is "missing"
-            connection=mock_conn,
-            downloader=_noop_downloader,
-            prefix="test://",
-            config=_default_config(),
-            max_workers=1,
-            delete_missing=True,
+        changes = list(
+            process_changed_documents(
+                [],  # empty sources — everything in Snowflake is "missing"
+                connection=mock_conn,
+                downloader=_noop_downloader,
+                prefix="test://",
+                config=_default_config(),
+                max_workers=1,
+                delete_missing=True,
+            )
         )
 
     assert len(changes) == 1
-    assert changes[0] == ("test://old.txt", "deleted", "", "", "")
+    assert changes[0] == ("test://old.txt", "", "deleted", "", "", "")
 
     # --- Part 2: broken iterator should suppress deletions ---
     class BrokenIterator:
@@ -414,21 +431,23 @@ def test_pcd_deleted_and_broken_iterator():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_conn2),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=("test://ok.txt", "new", "", "", "")),
+        patch("snowdoc.common.process_document", return_value=("test://ok.txt", "OK", "new", "", "", "")),
         patch("snowdoc.common.delete_rows"),
         patch("snowdoc.common.refresh_search_services"),
     ):
-        changes = process_changed_documents(
-            BrokenIterator(),
-            connection=mock_conn2,
-            downloader=_noop_downloader,
-            prefix="test://",
-            config=_default_config(),
-            max_workers=1,
-            delete_missing=True,
+        changes = list(
+            process_changed_documents(
+                BrokenIterator(),
+                connection=mock_conn2,
+                downloader=_noop_downloader,
+                prefix="test://",
+                config=_default_config(),
+                max_workers=1,
+                delete_missing=True,
+            )
         )
 
-    deleted = [c for c in changes if c[1] == "deleted"]
+    deleted = [c for c in changes if c[2] == "deleted"]
     assert len(deleted) == 0
 
 
@@ -461,8 +480,9 @@ def test_process_document_metadata_only_update():
 
     # Should return a change tuple with metadata_changes populated
     assert result is not None
-    source_uri_base, state, core_changes, metadata_changes, display_name_changes = result
+    source_uri_base, dn, state, core_changes, metadata_changes, display_name_changes = result
     assert source_uri_base == "test://doc.txt"
+    assert dn == "Doc Name"
     assert state == "processed"  # not "new" since URI existed
     assert "description: 'old desc' -> 'new desc'" in metadata_changes
     assert display_name_changes == ""
@@ -506,8 +526,9 @@ def test_process_document_version_bump():
         )
 
     assert result is not None
-    source_uri_base, state, core_changes, metadata_changes, display_name_changes = result
+    source_uri_base, dn, state, core_changes, metadata_changes, display_name_changes = result
     assert source_uri_base == "test://doc.txt"
+    assert dn == "New Name"
     assert state == "processed"  # base existed → not "new"
     assert "v: '3' -> '4'" in core_changes
     assert "ext" not in core_changes  # ext unchanged
