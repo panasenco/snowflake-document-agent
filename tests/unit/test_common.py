@@ -195,7 +195,7 @@ def test_process_changed_documents_handles_none_sentinel():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_connection),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=("test://unit/success.txt", "new", "", "")),
+        patch("snowdoc.common.process_document", return_value=("test://unit/success.txt", "new", "", "", "")),
         patch("snowdoc.common.refresh_search_services"),
     ):
         # Execute - Process the generator that includes error sentinels
@@ -238,7 +238,7 @@ def test_process_changed_documents_passes_metadata_to_process_document():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_connection),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=("test://unit/doc", "new", "", "")) as mock_process_doc,
+        patch("snowdoc.common.process_document", return_value=("test://unit/doc", "new", "", "", "")) as mock_process_doc,
         patch("snowdoc.common.refresh_search_services"),
     ):
         process_changed_documents(
@@ -272,7 +272,8 @@ def test_process_changed_documents_passes_metadata_to_process_document():
 # Document changes return type tests (TDD red phase)
 # ============================================================
 # These tests define the expected interface for the planned change where
-# process_changed_documents returns a list of (source_uri_base, state, core_changes, metadata_changes)
+# process_changed_documents returns a list of
+# (source_uri_base, state, core_changes, metadata_changes, display_name_changes)
 # tuples instead of a (processed, skipped, failed) count tuple.
 # A single format_dict_changes helper diffs two dicts into a semicolon-separated string.
 
@@ -314,7 +315,8 @@ def test_format_dict_changes():
 
 
 def test_pcd_returns_change_tuples():
-    """process_changed_documents returns a list of (source_uri_base, state, core_changes, metadata_changes) tuples.
+    """process_changed_documents returns a list of
+    (source_uri_base, state, core_changes, metadata_changes, display_name_changes) tuples.
     New, updated, skipped, sentinel, and duplicate sources are handled correctly."""
 
     def source_generator():
@@ -326,8 +328,8 @@ def test_pcd_returns_change_tuples():
 
     # process_document returns a change tuple for new/updated, None for skipped
     side_effects = [
-        ("test://new.txt", "new", "", ""),
-        ("test://updated.pdf", "processed", 'v: "1" -> "2"', 'description: "old" -> "new"'),
+        ("test://new.txt", "new", "", "", ""),
+        ("test://updated.pdf", "processed", 'v: "1" -> "2"', 'description: "old" -> "new"', '"OldName" -> "Updated"'),
         None,  # skipped
     ]
 
@@ -355,6 +357,7 @@ def test_pcd_returns_change_tuples():
     updated = [c for c in changes if c[1] == "processed"][0]
     assert 'v: "1" -> "2"' in updated[2]
     assert 'description: "old" -> "new"' in updated[3]
+    assert '"OldName" -> "Updated"' in updated[4]
 
 
 def test_pcd_deleted_and_broken_iterator():
@@ -385,7 +388,7 @@ def test_pcd_deleted_and_broken_iterator():
         )
 
     assert len(changes) == 1
-    assert changes[0] == ("test://old.txt", "deleted", "", "")
+    assert changes[0] == ("test://old.txt", "deleted", "", "", "")
 
     # --- Part 2: broken iterator should suppress deletions ---
     class BrokenIterator:
@@ -410,7 +413,7 @@ def test_pcd_deleted_and_broken_iterator():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_conn2),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=("test://ok.txt", "new", "", "")),
+        patch("snowdoc.common.process_document", return_value=("test://ok.txt", "new", "", "", "")),
         patch("snowdoc.common.delete_rows"),
         patch("snowdoc.common.refresh_search_services"),
     ):
