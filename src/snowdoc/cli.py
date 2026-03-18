@@ -115,14 +115,30 @@ def main() -> None:
             **pcd_params,
         )
 
+    csv_header = [
+        "source_uri_base",
+        "display_name",
+        "state",
+        "core_changes",
+        "metadata_changes",
+        "display_name_changes",
+    ]
     if args.output_csv:
         output_path = Path(args.output_csv)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        n_changes = 0
         with open(output_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["source_uri_base", "state", "core_changes", "metadata_changes", "display_name_changes"])
-            writer.writerows(changes)
-        logger.info(f"Wrote {len(changes)} changes to {args.output_csv}")
+            writer.writerow(csv_header)
+            for change in changes:
+                writer.writerow(change)
+                f.flush()
+                n_changes += 1
+        logger.info(f"Wrote {n_changes} changes to {args.output_csv}")
+    else:
+        # Consume the generator even if no CSV output is requested
+        for _ in changes:
+            pass
 
 
 if __name__ == "__main__":
