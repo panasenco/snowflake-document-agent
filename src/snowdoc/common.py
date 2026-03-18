@@ -30,10 +30,10 @@ CORTEX_DOCUMENT_EXTENSIONS = {"pdf", "pptx", "docx", "jpeg", "jpg", "png", "tiff
 
 
 def format_dict_changes(old: dict | None, new: dict | None) -> str:
-    """Diff two dicts and return a semicolon-separated string of quoted changes.
-    E.g. 'v: "3" -> "4"; foo: "xyz" -> "abc"'.
+    """Diff two dicts and return a semicolon-separated string of changes.
+    E.g. "v: '3' -> '4'; foo: 'xyz' -> 'abc'".
     Returns an empty string if there are no changes.
-    None is treated as an empty dict.
+    None is treated as an empty dict; absent values are shown as null.
     """
     old = old or {}
     new = new or {}
@@ -42,7 +42,9 @@ def format_dict_changes(old: dict | None, new: dict | None) -> str:
     for key in all_keys:
         old_val, new_val = old.get(key), new.get(key)
         if old_val != new_val:
-            parts.append(f'{key}: "{old_val}" -> "{new_val}"')
+            old_repr = "null" if old_val is None else f"'{old_val}'"
+            new_repr = "null" if new_val is None else f"'{new_val}'"
+            parts.append(f"{key}: {old_repr} -> {new_repr}")
     return "; ".join(parts)
 
 
@@ -393,21 +395,26 @@ def process_document(
     source_uri_new = False
     chunk_config_new = False
     with configured_connection.cursor() as cursor:
-        # Get the old display name (if any) for change tracking
+        # Look up the previous version (if any) by base URI pattern for change tracking
         source_pattern = get_source_pattern(source_uri)
         cursor.execute(
-            f"select display_name from {table_prefix}document_chunks where source_uri like :1 limit 1",
+            f"""
+            select dt.source_uri, dt.document_metadata_json, dc.display_name
+            from {table_prefix}document_text dt
+            left join {table_prefix}document_chunks dc on dt.source_uri = dc.source_uri
+            where dt.source_uri like :1
+            limit 1
+            """,
             (source_pattern,),
         )
-        old_display_name_row = cursor.fetchone()
-        old_display_name = old_display_name_row[0] if old_display_name_row else None
-        # Only reload/reparse if the uri is not already present in the document_text table
-        cursor.execute(
-            f"select document_metadata_json from {table_prefix}document_text where source_uri = :1", (source_uri,)
-        )
-        existing_text_row = cursor.fetchone()
-        old_metadata_json = existing_text_row[0] if existing_text_row else None
-        if existing_text_row is None:
+        old_row = cursor.fetchone()
+        old_source_uri = old_row[0] if old_row else None
+        old_metadata_json = old_row[1] if old_row else None
+        old_display_name = old_row[2] if old_row else None
+        base_is_new = old_source_uri is None
+        # Only reload/reparse if the exact uri is not already present in the document_text table
+        source_uri_new = base_is_new or old_source_uri != source_uri
+        if source_uri_new:
             logger.info(f"Downloading {source_uri}...")
             local_path = downloader(source_uri)
             source_uri_new = True
@@ -497,7 +504,7 @@ def process_document(
                 )
                 raise
         else:
-            # Document text already exists — check if metadata needs updating
+            # Exact source_uri already exists — check if metadata needs updating
             if document_metadata_json != old_metadata_json:
                 logger.info(f"Updating metadata for {name}...")
                 cursor.execute(
@@ -563,16 +570,24 @@ def process_document(
                 },
                 table_prefix=table_prefix,
             )
-            state = "new" if source_uri_new else "processed"
+            state = "new" if base_is_new else "processed"
+            if base_is_new:
+                core_changes = ""
+            else:
+                old_params = dict(
+                    pair.split("=", 1) for pair in old_source_uri.split("?", 1)[-1].split("&") if "=" in pair
+                )
+                new_params = dict(pair.split("=", 1) for pair in source_uri.split("?", 1)[-1].split("&") if "=" in pair)
+                core_changes = format_dict_changes(old_params, new_params)
             old_metadata = json.loads(old_metadata_json) if old_metadata_json else None
             new_metadata = json.loads(document_metadata_json) if document_metadata_json else None
             metadata_changes = format_dict_changes(old_metadata, new_metadata)
             display_name_changes = (
-                f'"{old_display_name}" -> "{display_name}"'
+                f"'{old_display_name}' -> '{display_name}'"
                 if old_display_name is not None and old_display_name != display_name
                 else ""
             )
-            return (source_uri_base, state, "", metadata_changes, display_name_changes)
+            return (source_uri_base, state, core_changes, metadata_changes, display_name_changes)
     logger.debug(f"No changes detected in {name} - skipped processing...")
     return None
 

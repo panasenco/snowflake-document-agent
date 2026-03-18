@@ -10,7 +10,7 @@ grant read, write on stage <% ctx.env.agent_name %>_documents to role <% ctx.env
 create table if not exists <% ctx.env.agent_name %>_document_text (
     source_uri string,
     document_text string(134217728),
-    document_metadata_json string,
+    document_metadata_json string
 ) change_tracking = true;
 grant select, insert, delete, update, truncate on table <% ctx.env.agent_name %>_document_text to role <% ctx.env.role %>;
 
