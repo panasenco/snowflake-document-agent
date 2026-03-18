@@ -290,14 +290,14 @@ def _default_config():
 
 
 def test_format_dict_changes():
-    """format_dict_changes diffs two dicts into a semicolon-separated string of quoted changes."""
+    """format_dict_changes diffs two dicts into a semicolon-separated string of changes."""
     # Single changed key
-    assert format_dict_changes({"v": "3"}, {"v": "4"}) == 'v: "3" -> "4"'
+    assert format_dict_changes({"v": "3"}, {"v": "4"}) == "v: '3' -> '4'"
 
     # Multiple changes are semicolon-separated; unchanged keys excluded
     result = format_dict_changes({"v": "3", "ext": ".pdf", "foo": "x"}, {"v": "4", "ext": ".pdf", "foo": "y"})
-    assert 'v: "3" -> "4"' in result
-    assert 'foo: "x" -> "y"' in result
+    assert "v: '3' -> '4'" in result
+    assert "foo: 'x' -> 'y'" in result
     assert "; " in result
     assert "ext" not in result
 
@@ -305,16 +305,14 @@ def test_format_dict_changes():
     assert format_dict_changes({"v": "3"}, {"v": "3"}) == ""
     assert format_dict_changes({}, {}) == ""
 
-    # Added and removed keys are reported
-    added = format_dict_changes({}, {"v": "1"})
-    assert "v" in added and '"1"' in added
-    removed = format_dict_changes({"v": "1"}, {})
-    assert "v" in removed and '"1"' in removed
+    # Added and removed keys use null for absent values
+    assert format_dict_changes({}, {"v": "1"}) == "v: null -> '1'"
+    assert format_dict_changes({"v": "1"}, {}) == "v: '1' -> null"
 
     # None treated as empty dict
     assert format_dict_changes(None, None) == ""
     result = format_dict_changes(None, {"description": "new"})
-    assert "description" in result and '"new"' in result
+    assert result == "description: null -> 'new'"
 
 
 def test_pcd_returns_change_tuples():
@@ -332,7 +330,7 @@ def test_pcd_returns_change_tuples():
     # process_document returns a change tuple for new/updated, None for skipped
     side_effects = [
         ("test://new.txt", "new", "", "", ""),
-        ("test://updated.pdf", "processed", 'v: "1" -> "2"', 'description: "old" -> "new"', '"OldName" -> "Updated"'),
+        ("test://updated.pdf", "processed", "v: '1' -> '2'", "description: 'old' -> 'new'", "'OldName' -> 'Updated'"),
         None,  # skipped
     ]
 
@@ -358,9 +356,9 @@ def test_pcd_returns_change_tuples():
     assert bases == {"test://new.txt", "test://updated.pdf"}
     # Check the updated entry carries diffs
     updated = [c for c in changes if c[1] == "processed"][0]
-    assert 'v: "1" -> "2"' in updated[2]
-    assert 'description: "old" -> "new"' in updated[3]
-    assert '"OldName" -> "Updated"' in updated[4]
+    assert "v: '1' -> '2'" in updated[2]
+    assert "description: 'old' -> 'new'" in updated[3]
+    assert "'OldName' -> 'Updated'" in updated[4]
 
 
 def test_pcd_deleted_and_broken_iterator():
@@ -441,13 +439,11 @@ def test_process_document_metadata_only_update():
     mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
     mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-    # First fetchone: old display name query → None (no prior chunks)
-    # Second fetchone: document_text exists with old metadata
-    # Third fetchone: chunks exist with matching config hash
+    # First fetchone: consolidated lookup → old version exists with old metadata, same display name
+    # Second fetchone: chunks exist with matching config hash
     old_metadata = '{"description": "old desc"}'
     mock_cursor.fetchone.side_effect = [
-        None,  # no old display name
-        (old_metadata,),  # document_text row exists with old metadata
+        ("test://doc.txt?v=1", old_metadata, "Doc Name"),  # old version exists (same URI = metadata-only update)
         ("Doc Name",),  # chunk row exists (display_name)
     ]
 
@@ -468,7 +464,7 @@ def test_process_document_metadata_only_update():
     source_uri_base, state, core_changes, metadata_changes, display_name_changes = result
     assert source_uri_base == "test://doc.txt"
     assert state == "processed"  # not "new" since URI existed
-    assert 'description: "old desc" -> "new desc"' in metadata_changes
+    assert "description: 'old desc' -> 'new desc'" in metadata_changes
     assert display_name_changes == ""
 
     # Verify the UPDATE was executed
@@ -476,6 +472,47 @@ def test_process_document_metadata_only_update():
         c for c in mock_cursor.execute.call_args_list if "update" in str(c).lower() and "metadata" in str(c).lower()
     ]
     assert len(update_calls) == 1
+
+
+def test_process_document_version_bump():
+    """process_document reports core_changes (param diffs) and state='processed' on a version bump."""
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    old_metadata = '{"description": "desc"}'
+    new_metadata = '{"description": "desc"}'  # metadata unchanged
+    mock_cursor.fetchone.side_effect = [
+        ("test://doc.txt?v=3&ext=.pdf", old_metadata, "Old Name"),  # old version
+        None,  # chunk row does not exist for new URI+hash → will re-chunk
+    ]
+
+    with (
+        patch("snowdoc.common.stage_document", return_value="staged/doc.pdf"),
+        patch("snowdoc.common.parse_document"),
+        patch("snowdoc.common.delete_rows"),
+        patch("snowdoc.common.chunk_document"),
+    ):
+        result = process_document(
+            mock_conn,
+            "test://doc.txt?v=4&ext=.pdf",
+            "New Name",
+            _noop_downloader,
+            "test_",
+            {"chunk_size": 1000, "chunk_overlap": 100},
+            "abc1234",
+            document_metadata_json=new_metadata,
+        )
+
+    assert result is not None
+    source_uri_base, state, core_changes, metadata_changes, display_name_changes = result
+    assert source_uri_base == "test://doc.txt"
+    assert state == "processed"  # base existed → not "new"
+    assert "v: '3' -> '4'" in core_changes
+    assert "ext" not in core_changes  # ext unchanged
+    assert metadata_changes == ""  # metadata didn't change
+    assert "'Old Name' -> 'New Name'" in display_name_changes
 
 
 def test_process_document_metadata_unchanged_skips():
@@ -487,8 +524,7 @@ def test_process_document_metadata_unchanged_skips():
 
     metadata = '{"description": "same"}'
     mock_cursor.fetchone.side_effect = [
-        None,  # no old display name
-        (metadata,),  # document_text row exists with same metadata
+        ("test://doc.txt?v=1", metadata, "Doc Name"),  # old version exists with same metadata
         ("Doc Name",),  # chunk row exists
     ]
 
