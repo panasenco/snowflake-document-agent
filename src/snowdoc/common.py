@@ -383,9 +383,9 @@ def process_document(
     update_display_name: bool = False,
     logger: Logger = getLogger(),
     document_metadata_json: str | None = None,
-) -> tuple[str, str, str, str] | None:
+) -> tuple[str, str, str, str, str] | None:
     """Process a single document end-to-end.
-    Returns a (source_uri_base, state, core_changes, metadata_changes) tuple, or None if skipped.
+    Returns a (source_uri_base, state, core_changes, metadata_changes, display_name_changes) tuple, or None if skipped.
     """
     source_uri_base = source_uri.split("?")[0]
     name = f"{source_uri} ({display_name})"  # Convenient shorthand for document name
@@ -393,6 +393,14 @@ def process_document(
     source_uri_new = False
     chunk_config_new = False
     with configured_connection.cursor() as cursor:
+        # Get the old display name (if any) for change tracking
+        source_pattern = get_source_pattern(source_uri)
+        cursor.execute(
+            f"select display_name from {table_prefix}document_chunks where source_uri like :1 limit 1",
+            (source_pattern,),
+        )
+        old_display_name_row = cursor.fetchone()
+        old_display_name = old_display_name_row[0] if old_display_name_row else None
         # Only reload/reparse if the uri is not already present in the document_text table
         cursor.execute(f"select count(*) from {table_prefix}document_text where source_uri = :1", (source_uri,))
         if cursor.fetchone()[0] == 0:
@@ -543,7 +551,12 @@ def process_document(
                 table_prefix=table_prefix,
             )
             state = "new" if source_uri_new else "processed"
-            return (source_uri_base, state, "", "")
+            display_name_changes = (
+                f'\"{old_display_name}\" -> \"{display_name}\"'
+                if old_display_name is not None and old_display_name != display_name
+                else ""
+            )
+            return (source_uri_base, state, "", "", display_name_changes)
     logger.debug(f"No changes detected in {name} - skipped processing...")
     return None
 
@@ -581,7 +594,7 @@ def process_changed_documents(
     delete_missing: bool = False,
     update_display_names: bool = False,
     logger: Logger = getLogger(),
-) -> list[tuple[str, str, str, str]]:
+) -> list[tuple[str, str, str, str, str]]:
     """Process just the documents that have changed since the last ingestion into Snowflake.
     Accepts an iterable (list or generator) of (source_uri, display_name, metadata) tuples.
     Requires the downloader callable, which accepts a source_uri and returns a local path to the corresponding document.
@@ -590,7 +603,7 @@ def process_changed_documents(
     Deletes old versions of successfully ingested documents, if any.
     If delete_missing is set, deletes matching documents that are only in Snowflake and are no longer in the source.
     If update_display_names is set, updates the display names of otherwise unchanged documents.
-    Returns a list of (source_uri_base, state, core_changes, metadata_changes) change tuples.
+    Returns a list of (source_uri_base, state, core_changes, metadata_changes, display_name_changes) change tuples.
     """
     sources_iterator = iter(sources)
     if config is None:
@@ -602,7 +615,7 @@ def process_changed_documents(
     # Ensure the Snowflake connection has the correct database/schema/warehouse
     configured_connection = configure_connection(connection, config)
     source_uris = set()
-    changes: list[tuple[str, str, str, str]] = []
+    changes: list[tuple[str, str, str, str, str]] = []
     n_skipped, n_failed = 0, 0
     process_sources = True
     all_sources_fetched = False
@@ -689,7 +702,7 @@ def process_changed_documents(
                     {table_name: ("source_uri like :1", source_pattern) for table_name in ALL_TABLES},
                     table_prefix=table_prefix,
                 )
-                changes.append((source_uri.split("?")[0], "deleted", "", ""))
+                changes.append((source_uri.split("?")[0], "deleted", "", "", ""))
     # Make sure Cortex search services reflect the changes
     if deleted_uris or len(changes) > 0:
         logger.info("Finished processing documents - refreshing search services...")

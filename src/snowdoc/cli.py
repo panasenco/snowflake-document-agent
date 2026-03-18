@@ -120,7 +120,7 @@ def main() -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["source_uri_base", "state", "core_changes", "metadata_changes"])
+            writer.writerow(["source_uri_base", "state", "core_changes", "metadata_changes", "display_name_changes"])
             writer.writerows(changes)
         logger.info(f"Wrote {len(changes)} changes to {args.output_csv}")
 
