@@ -10,6 +10,7 @@ from snowdoc.common import (
     excel_to_html,
     format_dict_changes,
     process_changed_documents,
+    process_document,
 )
 
 
@@ -238,7 +239,9 @@ def test_process_changed_documents_passes_metadata_to_process_document():
     with (
         patch("snowdoc.common.configure_connection", return_value=mock_connection),
         patch("snowdoc.common.clear_stage"),
-        patch("snowdoc.common.process_document", return_value=("test://unit/doc", "new", "", "", "")) as mock_process_doc,
+        patch(
+            "snowdoc.common.process_document", return_value=("test://unit/doc", "new", "", "", "")
+        ) as mock_process_doc,
         patch("snowdoc.common.refresh_search_services"),
     ):
         process_changed_documents(
@@ -429,3 +432,75 @@ def test_pcd_deleted_and_broken_iterator():
 
     deleted = [c for c in changes if c[1] == "deleted"]
     assert len(deleted) == 0
+
+
+def test_process_document_metadata_only_update():
+    """process_document updates metadata even when the document text is unchanged."""
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    # First fetchone: old display name query → None (no prior chunks)
+    # Second fetchone: document_text exists with old metadata
+    # Third fetchone: chunks exist with matching config hash
+    old_metadata = '{"description": "old desc"}'
+    mock_cursor.fetchone.side_effect = [
+        None,  # no old display name
+        (old_metadata,),  # document_text row exists with old metadata
+        ("Doc Name",),  # chunk row exists (display_name)
+    ]
+
+    new_metadata = '{"description": "new desc"}'
+    result = process_document(
+        mock_conn,
+        "test://doc.txt?v=1",
+        "Doc Name",
+        _noop_downloader,
+        "test_",
+        {"chunk_size": 1000, "chunk_overlap": 100},
+        "abc1234",
+        document_metadata_json=new_metadata,
+    )
+
+    # Should return a change tuple with metadata_changes populated
+    assert result is not None
+    source_uri_base, state, core_changes, metadata_changes, display_name_changes = result
+    assert source_uri_base == "test://doc.txt"
+    assert state == "processed"  # not "new" since URI existed
+    assert 'description: "old desc" -> "new desc"' in metadata_changes
+    assert display_name_changes == ""
+
+    # Verify the UPDATE was executed
+    update_calls = [
+        c for c in mock_cursor.execute.call_args_list if "update" in str(c).lower() and "metadata" in str(c).lower()
+    ]
+    assert len(update_calls) == 1
+
+
+def test_process_document_metadata_unchanged_skips():
+    """process_document returns None when neither text, chunks, nor metadata changed."""
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    metadata = '{"description": "same"}'
+    mock_cursor.fetchone.side_effect = [
+        None,  # no old display name
+        (metadata,),  # document_text row exists with same metadata
+        ("Doc Name",),  # chunk row exists
+    ]
+
+    result = process_document(
+        mock_conn,
+        "test://doc.txt?v=1",
+        "Doc Name",
+        _noop_downloader,
+        "test_",
+        {"chunk_size": 1000, "chunk_overlap": 100},
+        "abc1234",
+        document_metadata_json=metadata,
+    )
+
+    assert result is None  # nothing changed → skipped
