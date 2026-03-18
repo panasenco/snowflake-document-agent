@@ -402,8 +402,12 @@ def process_document(
         old_display_name_row = cursor.fetchone()
         old_display_name = old_display_name_row[0] if old_display_name_row else None
         # Only reload/reparse if the uri is not already present in the document_text table
-        cursor.execute(f"select count(*) from {table_prefix}document_text where source_uri = :1", (source_uri,))
-        if cursor.fetchone()[0] == 0:
+        cursor.execute(
+            f"select document_metadata_json from {table_prefix}document_text where source_uri = :1", (source_uri,)
+        )
+        existing_text_row = cursor.fetchone()
+        old_metadata_json = existing_text_row[0] if existing_text_row else None
+        if existing_text_row is None:
             logger.info(f"Downloading {source_uri}...")
             local_path = downloader(source_uri)
             source_uri_new = True
@@ -492,6 +496,15 @@ def process_document(
                     source_uri_new=True,
                 )
                 raise
+        else:
+            # Document text already exists — check if metadata needs updating
+            if document_metadata_json != old_metadata_json:
+                logger.info(f"Updating metadata for {name}...")
+                cursor.execute(
+                    f"update {table_prefix}document_text set document_metadata_json = :2 where source_uri = :1",
+                    (source_uri, document_metadata_json),
+                )
+                processed = True
         # Only recompute the chunks if the uri+config hash is not already present in the document_chunks table
         cursor.execute(
             f"""
@@ -551,12 +564,15 @@ def process_document(
                 table_prefix=table_prefix,
             )
             state = "new" if source_uri_new else "processed"
+            old_metadata = json.loads(old_metadata_json) if old_metadata_json else None
+            new_metadata = json.loads(document_metadata_json) if document_metadata_json else None
+            metadata_changes = format_dict_changes(old_metadata, new_metadata)
             display_name_changes = (
-                f'\"{old_display_name}\" -> \"{display_name}\"'
+                f'"{old_display_name}" -> "{display_name}"'
                 if old_display_name is not None and old_display_name != display_name
                 else ""
             )
-            return (source_uri_base, state, "", "", display_name_changes)
+            return (source_uri_base, state, "", metadata_changes, display_name_changes)
     logger.debug(f"No changes detected in {name} - skipped processing...")
     return None
 
