@@ -183,7 +183,7 @@ def test_process_changed_documents_handles_none_sentinel():
         # And another error sentinel
         yield (None, None, None)
 
-    def mock_downloader(source_uri: str) -> Path:
+    def mock_downloader(source_uri: str, metadata: dict | None = None) -> Path:
         """Mock downloader that returns fake paths"""
         return Path("/fake/path") / source_uri.split("/")[-1]
 
@@ -233,7 +233,7 @@ def test_process_changed_documents_passes_metadata_to_process_document():
         yield ("test://unit/with_meta.txt", "With Metadata", {"description": "A described document"})
         yield ("test://unit/no_meta.txt", "No Metadata", None)
 
-    def mock_downloader(source_uri: str) -> Path:
+    def mock_downloader(source_uri: str, metadata: dict | None = None) -> Path:
         return Path("/fake/path") / source_uri.split("/")[-1]
 
     mock_connection = MagicMock()
@@ -287,7 +287,7 @@ def test_process_changed_documents_passes_metadata_to_process_document():
 # A single format_dict_changes helper diffs two dicts into a semicolon-separated string.
 
 
-def _noop_downloader(uri):
+def _noop_downloader(uri, metadata=None):
     return Path("/fake") / uri.split("/")[-1]
 
 
@@ -501,10 +501,10 @@ def test_process_document_version_bump():
     mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
     mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-    old_metadata = '{"description": "desc"}'
-    new_metadata = '{"description": "desc"}'  # metadata unchanged
+    old_metadata = '{"description": "desc", "ext": ".pdf"}'
+    new_metadata = '{"description": "desc", "ext": ".pdf"}'  # metadata unchanged
     mock_cursor.fetchone.side_effect = [
-        ("test://doc.txt?v=3&ext=.pdf", old_metadata, "Old Name"),  # old version
+        ("test://doc.txt?v=3", old_metadata, "Old Name"),  # old version
         None,  # chunk row does not exist for new URI+hash → will re-chunk
     ]
 
@@ -516,7 +516,7 @@ def test_process_document_version_bump():
     ):
         result = process_document(
             mock_conn,
-            "test://doc.txt?v=4&ext=.pdf",
+            "test://doc.txt?v=4",
             "New Name",
             _noop_downloader,
             "test_",

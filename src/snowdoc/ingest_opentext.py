@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import urlencode
 
 import requests
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
@@ -188,12 +188,10 @@ class OpenTextDownloader:
                             continue
                         else:
                             raise
-                    # Create source URI with extension
-                    source_uri = f"{prefix}{node_id}?" + urlencode(
-                        {"v": version["data"]["version_number"], "ext": extension}
-                    )
+                    # Create source URI without extension (ext now lives in metadata)
+                    source_uri = f"{prefix}{node_id}?" + urlencode({"v": version["data"]["version_number"]})
                     # Build metadata dict from node data
-                    metadata = {}
+                    metadata = {"ext": extension}
                     if node_data.get("description"):
                         metadata["description"] = node_data["description"]
                     yield source_uri, "/".join([*parents, f"{node_data['name']}{extension}"]), metadata
@@ -224,9 +222,10 @@ class OpenTextDownloader:
                         else:
                             raise
 
-    def __call__(self, source_uri: str) -> Path:
+    def __call__(self, source_uri: str, metadata: dict | None = None) -> Path:
         """Downloads an OpenText document and returns its local path.
         Note that the version (v=) param is ignored as only the current version's content can be downloaded.
+        The file extension is read from the metadata dict (key 'ext').
         """
         # The OpenText node ID is between the question mark and the preceding slash
         opentext_id = source_uri.split("?")[0].split("/")[-1]
@@ -234,8 +233,10 @@ class OpenTextDownloader:
             raise ValueError(f"Could not extract OpenText node id from {source_uri=}")
         if not opentext_id.isnumeric():
             raise ValueError(f"OpenText node id {opentext_id} extracted from {source_uri=} is not numeric")
-        # The extension is stored in the query part of the URI
-        extension = parse_qs(urlsplit(source_uri).query)["ext"][0]
+        # The extension is stored in the metadata dict
+        if not metadata or "ext" not in metadata:
+            raise ValueError(f"Missing 'ext' key in metadata for {source_uri=}")
+        extension = metadata["ext"]
         # Call OpenText API to get content
         response = self.call("GET", f"opentext/cloud/v1/nodes/{opentext_id}/content")
         # Write content to temporary file with opentext_id prefix and correct extension

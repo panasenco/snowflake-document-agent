@@ -48,7 +48,7 @@ def test_opentext_document_content_download(opentext_conn, opentext_node_id):
 
         # Test the downloader directly (it's callable)
         # This should trigger the download
-        local_path = opentext_conn(first_uri)
+        local_path = opentext_conn(first_uri, first_metadata)
 
         # Verify the file was downloaded and exists
         assert local_path is not None, f"local_path should not be None for document {first_uri}"
@@ -102,8 +102,9 @@ def test_get_opentext_documents_deployment(opentext_conn, opentext_node_id):
         # Should be a string display name
         assert isinstance(first_display_name, str)
 
-        # Should have metadata dict
+        # Should have metadata dict with ext key
         assert isinstance(first_metadata, dict), f"Expected metadata dict, got {type(first_metadata)}"
+        assert "ext" in first_metadata, f"Expected 'ext' key in metadata, got {first_metadata}"
 
         print(f"✅ Successfully discovered document from OpenText node {opentext_node_id}")
         print(f"  - {first_uri} -> {first_display_name}")

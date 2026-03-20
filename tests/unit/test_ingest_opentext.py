@@ -51,13 +51,14 @@ def test_get_opentext_documents_basic():
         next(docs_generator)
     assert source_uri.startswith("opentext://12345")
     assert "v=1" in source_uri
-    assert "ext=.pdf" in source_uri
+    assert "ext=" not in source_uri
 
     # Should have correct display name
     assert display_name == "test_document.pdf"
 
-    # Should have metadata dict (with no description since none was in the node data)
+    # Should have metadata dict with ext (no description since none was in the node data)
     assert isinstance(metadata, dict)
+    assert metadata["ext"] == ".pdf"
 
 
 def test_get_opentext_documents_handles_folder():
@@ -127,13 +128,14 @@ def test_get_opentext_documents_handles_folder():
         next(docs_generator)
     assert source_uri.startswith("opentext://200")
     assert "v=2" in source_uri
-    assert "ext=.docx" in source_uri
+    assert "ext=" not in source_uri
 
     # Should have display name with parent folder
     assert display_name == "Documents/child_doc.docx"
 
-    # Should have metadata dict from the child document node
+    # Should have metadata dict with ext from the child document node
     assert isinstance(metadata, dict)
+    assert metadata["ext"] == ".docx"
 
 
 def test_get_opentext_documents_handles_shortcut():
@@ -194,13 +196,14 @@ def test_get_opentext_documents_handles_shortcut():
     # URI should use actual document's node ID (600) from the recursive call
     assert source_uri.startswith("opentext://600")
     assert "v=1" in source_uri
-    assert "ext=.pdf" in source_uri
+    assert "ext=" not in source_uri
 
     # Should use shortcut name in display name (shortcut_name.pdf replaces actual_doc.pdf)
     assert display_name == "shortcut_name.pdf"
 
-    # Should have metadata dict from the actual document (not the shortcut)
+    # Should have metadata dict with ext from the actual document (not the shortcut)
     assert isinstance(metadata, dict)
+    assert metadata["ext"] == ".pdf"
 
 
 def test_get_opentext_documents_handles_http_errors():
@@ -330,9 +333,10 @@ def test_get_opentext_documents_handles_http_errors():
     source_uri, display_name, metadata = successful_docs[0]
     assert source_uri.startswith("opentext://300")
     assert "v=1" in source_uri
-    assert "ext=.txt" in source_uri
+    assert "ext=" not in source_uri
     assert display_name == "successful_doc.txt"
     assert isinstance(metadata, dict)
+    assert metadata["ext"] == ".txt"
 
 
 def test_opentext_downloader_call_basic():
@@ -357,8 +361,8 @@ def test_opentext_downloader_call_basic():
             app_client_secret="app_secret",
         )
 
-        # Test downloading a document using new URI format
-        result = downloader("opentext://12345?v=1&ext=.pdf")
+        # Test downloading a document using URI + metadata
+        result = downloader("opentext://12345?v=1", {"ext": ".pdf"})
 
         # Should return a Path
         assert isinstance(result, Path)
@@ -390,25 +394,29 @@ def test_opentext_downloader_call_uri_format():
         mock_response.content = b"fake content"
         downloader.call = Mock(return_value=mock_response)
 
-        # Should error for URI missing extension parameter
-        with pytest.raises(KeyError):
+        # Should error for missing metadata
+        with pytest.raises(ValueError, match="Missing 'ext' key in metadata"):
             downloader("opentext://12345?v=1")
+
+        # Should error for metadata without ext key
+        with pytest.raises(ValueError, match="Missing 'ext' key in metadata"):
+            downloader("opentext://12345?v=1", {"description": "no ext"})
 
         # Should error for blank node id
         with pytest.raises(ValueError):
-            downloader("opentext://?ext=.pdf")
+            downloader("opentext://?v=1", {"ext": ".pdf"})
 
         # Should error for non-numeric node id
         with pytest.raises(ValueError):
-            downloader("opentext://path/to/file?ext=.pdf")
+            downloader("opentext://path/to/file?v=1", {"ext": ".pdf"})
 
-        path = downloader("opentext://12345?ext=.pdf")
+        path = downloader("opentext://12345?v=1", {"ext": ".pdf"})
         downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes/12345/content")
         assert path.suffix == ".pdf"
 
         downloader.call.reset_mock()
 
-        path = downloader("https://opentext.example.com/my/api/path/6789?ext=.docx")
+        path = downloader("https://opentext.example.com/my/api/path/6789?v=2", {"ext": ".docx"})
         downloader.call.assert_called_with("GET", "opentext/cloud/v1/nodes/6789/content")
         assert path.suffix == ".docx"
 
@@ -502,9 +510,10 @@ def test_get_opentext_documents_includes_description_metadata():
     docs_generator = downloader.get_opentext_documents(opentext_nodes=[12345])
     source_uri, display_name, metadata = next(docs_generator)
 
-    # Metadata should contain the description from node_data
+    # Metadata should contain ext and description from node_data
     assert metadata is not None
     assert isinstance(metadata, dict)
+    assert metadata["ext"] == ".pdf"
     assert "description" in metadata
     assert metadata["description"] == "This is an important compliance document for Q4 review"
 
@@ -544,7 +553,8 @@ def test_get_opentext_documents_metadata_without_description():
     docs_generator = downloader.get_opentext_documents(opentext_nodes=[99999])
     source_uri, display_name, metadata = next(docs_generator)
 
-    # Should still return a metadata dict, just without the description key
+    # Should still return a metadata dict with ext, just without the description key
     assert metadata is not None
     assert isinstance(metadata, dict)
+    assert metadata["ext"] == ".txt"
     assert "description" not in metadata
