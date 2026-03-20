@@ -32,7 +32,7 @@ def get_local_documents(root_path: Path, source_name: str = "") -> Iterator[tupl
             yield source_uri, file_path.relative_to(root_path).as_posix(), None
 
 
-def local_downloader(source_uri: str) -> Path:
+def local_downloader(source_uri: str, metadata: dict | None = None) -> Path:
     """Retrieves a local file on the assumption that the source_uri contains an absolute filepath."""
     source_uri_path = urlsplit(source_uri).path
     # Strip leading slash on Windows

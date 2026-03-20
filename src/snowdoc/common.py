@@ -378,7 +378,7 @@ def process_document(
     configured_connection: SnowflakeConnection,
     source_uri: str,
     display_name: str,
-    downloader: Callable[[str], Path],
+    downloader: Callable[..., Path],
     table_prefix: str,
     chunk_config: dict[str, Any],
     chunk_config_hash: str,
@@ -416,7 +416,8 @@ def process_document(
         source_uri_new = base_is_new or old_source_uri != source_uri
         if source_uri_new:
             logger.info(f"Downloading {source_uri}...")
-            local_path = downloader(source_uri)
+            document_metadata = json.loads(document_metadata_json) if document_metadata_json else None
+            local_path = downloader(source_uri, document_metadata)
             source_uri_new = True
             try:
                 document_type = local_path.suffix.removeprefix(".").lower()
@@ -618,7 +619,7 @@ def process_changed_documents(
     sources: Iterable[tuple[str, str]],
     *,
     connection: SnowflakeConnection | str = "default",
-    downloader: Callable[[str], Path],
+    downloader: Callable[..., Path],
     prefix: str,
     config: dict[str, Any] | None = None,
     max_workers: int = 8,
