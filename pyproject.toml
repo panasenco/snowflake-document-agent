@@ -21,7 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "agent-evaluation @ git+https://github.com/panasenco/agent-evaluation.git@fix-reasoning-none-validation-error",
+    "agent-evaluation @ git+https://github.com/panasenco/agent-evaluation.git@fail-follow-up",
     "pytest>=9.0.2",
     "ruff>=0.9.0",
     "snowflake-cli>=3.14.0",
@@ -32,7 +32,7 @@ snowdoc = "snowdoc.cli:main"
 
 [dependency-groups]
 dev = [
-    "agent-evaluation @ git+https://github.com/panasenco/agent-evaluation.git@fix-reasoning-none-validation-error",
+    "agent-evaluation @ git+https://github.com/panasenco/agent-evaluation.git@fail-follow-up",
     "pytest>=9.0.2",
     "ruff>=0.9.0",
     "snowflake-cli>=3.14.0",

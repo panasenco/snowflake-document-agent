@@ -1,8 +1,17 @@
+import logging
 import os
 from typing import Any
 
 from agenteval.targets import BaseTarget, TargetResponse
 import requests
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter, before_sleep_log
+
+logger = logging.getLogger(__name__)
+
+
+def _is_server_error(exc: BaseException) -> bool:
+    """Return True if the exception is an HTTP 5xx server error."""
+    return isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code >= 500
 
 
 class HostnameAdapter(requests.adapters.HTTPAdapter):
@@ -55,6 +64,13 @@ class SnowflakeAgentTarget(BaseTarget):
         self.thread_id = None
         self.parent_message_id = 0
 
+    @retry(
+        retry=retry_if_exception(_is_server_error),
+        stop=stop_after_attempt(6),
+        wait=wait_exponential_jitter(initial=2, max=60, jitter=5),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
     def run(self, prompt: str, /) -> dict[str, Any]:
         """Run an agent and get its response from the Snowflake Cortex REST API."""
         # Build request payload with conversation threading support
